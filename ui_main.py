@@ -14,6 +14,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel
 from qfluentwidgets import (FluentWindow, SubtitleLabel, BodyLabel, LineEdit,
                             PushButton, TextEdit, CardWidget, ComboBox,
+                            SwitchButton,
                             Theme, setTheme, qconfig, NavigationItemPosition,
                             FluentIcon as FIF, InfoBar, InfoBarPosition,
                             ScrollArea)
@@ -67,13 +68,14 @@ class MonitorWorker(QThread):
     countdown_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool)
 
-    def __init__(self, api_engine, section_ids, interval, target_time_str):
+    def __init__(self, api_engine, section_ids, interval, target_time_str, enable_waitlist=False):
         super().__init__()
         self.is_running = True
         self.api_engine = api_engine
         self.section_ids = section_ids
         self.interval = interval
         self.target_time_str = target_time_str
+        self.enable_waitlist = enable_waitlist
         self._stop_event = threading.Event()
 
         self.api_engine.log_callback = lambda msg, level="normal": self.log_signal.emit(msg, level)
@@ -137,7 +139,8 @@ class MonitorWorker(QThread):
             self.log_signal.emit(i18n.tr("msg_round_start", attempt), "normal")
 
             try:
-                success, msg = self.api_engine.execute_full_attack(self.section_ids)
+                success, msg = self.api_engine.execute_full_attack(
+                    self.section_ids, enable_waitlist=self.enable_waitlist)
 
                 if success:
                     self.log_signal.emit(i18n.tr("msg_success"), "success")
@@ -235,6 +238,16 @@ class MonitorInterface(QWidget):
 
         card_layout.addLayout(input_row2)
 
+        waitlist_row = QHBoxLayout()
+        self.waitlist_label = BodyLabel(i18n.tr("lbl_waitlist"))
+        self.waitlist_switch = SwitchButton()
+        self.waitlist_switch.setChecked(False)
+        self.waitlist_switch.setToolTip(i18n.tr("tooltip_waitlist"))
+        waitlist_row.addWidget(self.waitlist_label)
+        waitlist_row.addWidget(self.waitlist_switch)
+        waitlist_row.addStretch(1)
+        card_layout.addLayout(waitlist_row)
+
         btn_row = QHBoxLayout()
         self.btn_start = PushButton(FIF.PLAY, i18n.tr("btn_start"))
         self.btn_stop = PushButton(FIF.PAUSE, i18n.tr("btn_stop"))
@@ -312,7 +325,9 @@ class MonitorInterface(QWidget):
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
 
-        self.worker = MonitorWorker(self.api_engine, section_list, interval_time, target_time_str)
+        waitlist_enabled = self.waitlist_switch.isChecked()
+        self.worker = MonitorWorker(self.api_engine, section_list, interval_time, target_time_str,
+                                    enable_waitlist=waitlist_enabled)
         self.worker.log_signal.connect(self.log)
         self.worker.countdown_signal.connect(self.update_btn_text)
         self.worker.finished_signal.connect(self.on_worker_finished)
