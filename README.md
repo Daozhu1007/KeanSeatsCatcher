@@ -12,6 +12,7 @@
   <img src="https://img.shields.io/badge/platform-Windows-blue" alt="Platform">
   <img src="https://img.shields.io/badge/python-3.9+-blue" alt="Python Version">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  <a href="https://space.bilibili.com/477852567"><img src="https://img.shields.io/badge/Bilibili-477852567-00A1D6?logo=bilibili" alt="Bilibili"></a>
 </p>
 
 ---
