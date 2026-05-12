@@ -525,6 +525,8 @@ class AboutInterface(ScrollArea):
 
     def _on_lang_changed(self, index):
         lang_code = self.lang_combo.itemData(index)
+        if not lang_code:
+            return
         config = load_config()
         if config.get("Settings", {}).get("Language") == lang_code:
             return
