@@ -64,15 +64,7 @@ python ui_main.py
 
 Operation requires a valid Ellucian Banner 9 SSO session. On first launch, the app will open a Chromium browser window for you to complete SSO login; the session token is then extracted automatically.
 
-**Finding your Section ID:**
-
-1. Log into your institution's Banner 9 registration portal
-2. Search for the course you want to register for
-3. Open your browser's DevTools (F12) → Network tab
-4. Click on a course section — look for a request to an endpoint like `/StudentRegistrationSsb/ssb/searchResults/searchResults`
-5. In the response JSON, locate the `courseReferenceNumber` field — this is your Section ID
-
-Enter the Section ID(s) into the interface along with your desired polling interval, then start the engine.
+The retrieval method for Section IDs is not documented here. This project assumes you already know how to locate the target identifiers within your institution's registration portal.
 
 ## ⚠️ Known Limitations
 
