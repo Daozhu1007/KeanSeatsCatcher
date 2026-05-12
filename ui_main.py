@@ -36,9 +36,9 @@ class BrandingWidget(QWidget):
         self.icon_label = QLabel(self)
         self.icon_label.setStyleSheet("background-color: rgba(255, 255, 255, 0.85); border-radius: 4px; padding: 2px;")
 
-        logo_path = "logo.png"
+        logo_path = os.path.join(app_dir, "logo.png")
         if not os.path.exists(logo_path):
-            logo_path = "logo.jpg"
+            logo_path = os.path.join(app_dir, "logo.jpg")
 
         if os.path.exists(logo_path):
             pixmap = QPixmap(logo_path)

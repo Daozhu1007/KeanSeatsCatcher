@@ -47,10 +47,13 @@ def load_config():
 
 def save_config(config):
     config_path = os.path.join(app_dir, "config.json")
-    with open(config_path, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=4, ensure_ascii=False)
+    try:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        print(f"[ERROR] Failed to save config: {e}")
 
 
 cfg = load_config()
-language = cfg.get("Settings", {}).get("Language", "zh_CN")
+language = cfg.get("Settings", {}).get("Language") or "zh_CN"
 i18n = I18nManager(language)
