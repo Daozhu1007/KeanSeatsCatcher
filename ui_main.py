@@ -207,27 +207,15 @@ class MonitorInterface(QWidget):
         card_layout.setContentsMargins(20, 20, 20, 20)
         card_layout.setSpacing(15)
 
-        # Row 1: Section IDs
         input_row1 = QHBoxLayout()
-
-        lbl_section = BodyLabel(i18n.tr("lbl_section_ids"))
-        lbl_section.setMinimumWidth(210)
-        input_row1.addWidget(lbl_section)
-
+        input_row1.addWidget(BodyLabel(i18n.tr("lbl_section_ids")))
         self.section_input = LineEdit()
         self.section_input.setPlaceholderText(i18n.tr("placeholder_section_ids"))
-        self.section_input.setMinimumWidth(120)
         input_row1.addWidget(self.section_input, 1)
 
-        card_layout.addLayout(input_row1)
+        input_row1.addSpacing(20)
 
-        # Row 2: Interval
-        input_row_interval = QHBoxLayout()
-
-        lbl_interval = BodyLabel(i18n.tr("lbl_interval"))
-        lbl_interval.setMinimumWidth(90)
-        input_row_interval.addWidget(lbl_interval)
-
+        input_row1.addWidget(BodyLabel(i18n.tr("lbl_interval")))
         self.interval_input = LineEdit()
         self.interval_input.setPlaceholderText(i18n.tr("placeholder_interval"))
         self.interval_input.setText("5")
@@ -235,23 +223,15 @@ class MonitorInterface(QWidget):
 
         validator = QIntValidator(0, 3600, self)
         self.interval_input.setValidator(validator)
-        input_row_interval.addWidget(self.interval_input)
-        input_row_interval.addStretch(1)
+        input_row1.addWidget(self.interval_input)
 
-        card_layout.addLayout(input_row_interval)
+        card_layout.addLayout(input_row1)
 
-        # Row 3: Scheduled Time
         input_row2 = QHBoxLayout()
-
-        lbl_schedule = BodyLabel(i18n.tr("lbl_schedule"))
-        lbl_schedule.setMinimumWidth(230)
-        input_row2.addWidget(lbl_schedule)
-
+        input_row2.addWidget(BodyLabel(i18n.tr("lbl_schedule")))
         self.time_input = LineEdit()
         self.time_input.setPlaceholderText(i18n.tr("placeholder_schedule"))
-        self.time_input.setMinimumWidth(120)
         input_row2.addWidget(self.time_input, 1)
-
         card_layout.addLayout(input_row2)
 
         btn_row = QHBoxLayout()
