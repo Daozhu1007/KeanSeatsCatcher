@@ -213,18 +213,6 @@ class MonitorInterface(QWidget):
         self.section_input.setPlaceholderText(i18n.tr("placeholder_section_ids"))
         input_row1.addWidget(self.section_input, 1)
 
-        input_row1.addSpacing(20)
-
-        input_row1.addWidget(BodyLabel(i18n.tr("lbl_interval")))
-        self.interval_input = LineEdit()
-        self.interval_input.setPlaceholderText(i18n.tr("placeholder_interval"))
-        self.interval_input.setText("5")
-        self.interval_input.setFixedWidth(80)
-
-        validator = QIntValidator(0, 3600, self)
-        self.interval_input.setValidator(validator)
-        input_row1.addWidget(self.interval_input)
-
         card_layout.addLayout(input_row1)
 
         input_row2 = QHBoxLayout()
@@ -232,6 +220,19 @@ class MonitorInterface(QWidget):
         self.time_input = LineEdit()
         self.time_input.setPlaceholderText(i18n.tr("placeholder_schedule"))
         input_row2.addWidget(self.time_input, 1)
+
+        input_row2.addSpacing(20)
+
+        input_row2.addWidget(BodyLabel(i18n.tr("lbl_interval")))
+        self.interval_input = LineEdit()
+        self.interval_input.setPlaceholderText(i18n.tr("placeholder_interval"))
+        self.interval_input.setText("5")
+        self.interval_input.setFixedWidth(80)
+
+        validator = QIntValidator(0, 3600, self)
+        self.interval_input.setValidator(validator)
+        input_row2.addWidget(self.interval_input)
+
         card_layout.addLayout(input_row2)
 
         btn_row = QHBoxLayout()
