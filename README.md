@@ -54,13 +54,13 @@ pip install -r requirements.txt
 python ui_main.py
 ```
 
-### 🎯 Execution Protocol
+## 🎯 Execution Protocol
 
 Operation requires a valid Ellucian Banner 9 SSO session.
 
 Provide the target parameters via the interface. The precise definition and retrieval method of a Section ID are left as an exercise for the reader.
 
-### 📂 Project Structure
+## 📂 Project Structure
 
 ```
 KeanSeatsCatcher/
