@@ -4,6 +4,10 @@ from typing import List, Tuple, Any
 
 from i18n import i18n
 
+# Action string for waitlist fallback. Change this if your Ellucian system
+# uses a different action code for waitlisted courses.
+WAITLIST_ACTION = "Waitlist"
+
 
 class KeanApiClient:
     def __init__(self, cookies_dict: dict, verification_token: str, student_id: str):
@@ -35,6 +39,11 @@ class KeanApiClient:
         msg_lower = msg.lower()
         return "duplicate" in msg_lower or "already registered" in msg_lower
 
+    @staticmethod
+    def _is_timeout_error(msg) -> bool:
+        msg_lower = str(msg).lower()
+        return "timeout" in msg_lower or "超时" in msg_lower
+
     def _parse_notifications(self, items: list) -> Tuple[bool, list]:
         errors = []
         for item in items:
@@ -47,9 +56,9 @@ class KeanApiClient:
                     errors.append(msg)
         return False, errors
 
-    def register_multiple_sections(self, section_ids: List[str]) -> Tuple[bool, Any]:
+    def register_multiple_sections(self, section_ids: List[str], action: str = "Add") -> Tuple[bool, Any]:
         url = f"{self.base_url}/RegisterSections"
-        registrations = [{"SectionId": str(sec_id), "Credits": 3, "Action": "Add", "DropReasonCode": None,
+        registrations = [{"SectionId": str(sec_id), "Credits": 3, "Action": action, "DropReasonCode": None,
                           "IntentToWithdrawId": None} for sec_id in section_ids]
         payload = {"sectionRegistrations": registrations, "studentId": str(self.student_id)}
 
@@ -121,7 +130,7 @@ class KeanApiClient:
             self._log(i18n.tr("log_confirm_error", e), "error")
             return False
 
-    def execute_full_attack(self, section_ids: List[str]) -> Tuple[bool, str]:
+    def execute_full_attack(self, section_ids: List[str], enable_waitlist: bool = False) -> Tuple[bool, str]:
         success, result_data = self.register_multiple_sections(section_ids)
 
         if success:
@@ -130,5 +139,19 @@ class KeanApiClient:
                 return True, i18n.tr("msg_attack_complete")
             else:
                 return True, i18n.tr("msg_attack_locked")
+
+        # Fallback: if waitlist is enabled and the failure is not a timeout, try waitlist
+        if enable_waitlist and not self._is_timeout_error(result_data):
+            self._log(i18n.tr("log_waitlist_attempt"))
+            success, result_data = self.register_multiple_sections(section_ids, action=WAITLIST_ACTION)
+
+            if success:
+                confirm_success = self.complete_registration()
+                if confirm_success:
+                    return True, i18n.tr("msg_attack_complete")
+                else:
+                    return True, i18n.tr("msg_attack_locked")
+            else:
+                return False, i18n.tr("msg_waitlist_failed", str(result_data))
 
         return False, str(result_data)
