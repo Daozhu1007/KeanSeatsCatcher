@@ -474,8 +474,8 @@ class AboutInterface(ScrollArea):
         lang_label = BodyLabel(i18n.tr("set_lang"))
         lang_label.setStyleSheet("font-size: 14px;")
         self.lang_combo = ComboBox()
-        self.lang_combo.addItem(i18n.tr("lang_zh"), "zh_CN")
-        self.lang_combo.addItem(i18n.tr("lang_en"), "en_US")
+        self.lang_combo.addItem(i18n.tr("lang_zh"), userData="zh_CN")
+        self.lang_combo.addItem(i18n.tr("lang_en"), userData="en_US")
         current_lang = i18n.locale
         self.lang_combo.setCurrentIndex(0 if current_lang == "zh_CN" else 1)
         self.lang_combo.currentIndexChanged.connect(self._on_lang_changed)
