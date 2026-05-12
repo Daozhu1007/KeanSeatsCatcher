@@ -1,10 +1,8 @@
 import json
 import time
 from selenium import webdriver
-from selenium.webdriver.edge.service import Service
 from selenium.webdriver.edge.options import Options
 from selenium.common.exceptions import WebDriverException, InvalidSessionIdException
-from webdriver_manager.microsoft import EdgeChromiumDriverManager
 
 from i18n import i18n
 
@@ -96,11 +94,14 @@ class KeanAuthManager:
 
         result = json.loads(result_json)
 
+        if not isinstance(result, dict):
+            return {"error": i18n.tr("err_no_student_id")}
+
         verification_token = result.get('token')
         student_id = result.get('student_id')
 
         if not verification_token:
-            print("Warning: RequestVerificationToken not found on page")
+            return {"error": "Verification token not found on page. Please ensure you are logged in."}
         if not student_id:
             return {"error": i18n.tr("err_no_student_id")}
 

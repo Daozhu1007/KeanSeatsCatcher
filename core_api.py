@@ -1,3 +1,4 @@
+import json
 import requests
 from typing import List, Tuple, Any
 
@@ -32,7 +33,7 @@ class KeanApiClient:
     @staticmethod
     def _is_duplicate_registration_msg(msg: str) -> bool:
         msg_lower = msg.lower()
-        return any(kw in msg_lower for kw in ("already", "registered", "duplicate"))
+        return "duplicate" in msg_lower or "already registered" in msg_lower
 
     def _parse_notifications(self, items: list) -> Tuple[bool, list]:
         errors = []
@@ -59,7 +60,7 @@ class KeanApiClient:
             if resp.status_code == 200:
                 try:
                     response_data = resp.json()
-                except requests.exceptions.JSONDecodeError:
+                except (requests.exceptions.JSONDecodeError, json.JSONDecodeError, ValueError):
                     self._log(i18n.tr("log_non_json_response"), "error")
                     return False, i18n.tr("msg_response_format_error", resp.text[:200])
 
