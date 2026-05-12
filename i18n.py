@@ -55,5 +55,5 @@ def save_config(config):
 
 
 cfg = load_config()
-language = cfg.get("Settings", {}).get("Language") or "zh_CN"
+language = cfg.get("Settings", {}).get("Language") or "en_US"
 i18n = I18nManager(language)
