@@ -208,14 +208,22 @@ class MonitorInterface(QWidget):
         card_layout.setSpacing(15)
 
         input_row1 = QHBoxLayout()
-        input_row1.addWidget(BodyLabel(i18n.tr("lbl_section_ids")))
+
+        lbl_section = BodyLabel(i18n.tr("lbl_section_ids"))
+        lbl_section.setMinimumWidth(210)
+        input_row1.addWidget(lbl_section)
+
         self.section_input = LineEdit()
         self.section_input.setPlaceholderText(i18n.tr("placeholder_section_ids"))
+        self.section_input.setMinimumWidth(120)
         input_row1.addWidget(self.section_input, 1)
 
         input_row1.addSpacing(20)
 
-        input_row1.addWidget(BodyLabel(i18n.tr("lbl_interval")))
+        lbl_interval = BodyLabel(i18n.tr("lbl_interval"))
+        lbl_interval.setMinimumWidth(90)
+        input_row1.addWidget(lbl_interval)
+
         self.interval_input = LineEdit()
         self.interval_input.setPlaceholderText(i18n.tr("placeholder_interval"))
         self.interval_input.setText("5")
@@ -228,9 +236,14 @@ class MonitorInterface(QWidget):
         card_layout.addLayout(input_row1)
 
         input_row2 = QHBoxLayout()
-        input_row2.addWidget(BodyLabel(i18n.tr("lbl_schedule")))
+
+        lbl_schedule = BodyLabel(i18n.tr("lbl_schedule"))
+        lbl_schedule.setMinimumWidth(230)
+        input_row2.addWidget(lbl_schedule)
+
         self.time_input = LineEdit()
         self.time_input.setPlaceholderText(i18n.tr("placeholder_schedule"))
+        self.time_input.setMinimumWidth(120)
         input_row2.addWidget(self.time_input, 1)
         card_layout.addLayout(input_row2)
 
