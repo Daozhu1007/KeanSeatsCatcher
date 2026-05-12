@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo.png" width="200" alt="KeanSeatsCatcher Logo">
+  <img src="assets/logo.png" width="200" alt="KeanSeatsCatcher Logo">
 </p>
 
 <h1 align="center">KeanSeatsCatcher</h1>
@@ -18,16 +18,22 @@
 ---
 
 <p align="center">
-  <img src="docs/screenshot.png" width="800" alt="KeanSeatsCatcher GUI Interface">
+  <img src="assets/screenshot.png" width="800" alt="KeanSeatsCatcher GUI Interface">
 </p>
 
 ## ⚠️ Disclaimer
 
-This software is an external auxiliary toolkit designed strictly for **educational purposes**, specifically for the study of HTTP API reverse engineering, concurrent network requests, and Python GUI automation patterns.
+This software is an external auxiliary toolkit intended for **personal, non-commercial use only**. It is shared for educational purposes — specifically the study of HTTP API interaction, asynchronous concurrency, and Python GUI patterns.
 
-It interacts with the Ellucian Banner 9 system solely via standard web API endpoints. It does not exploit system vulnerabilities, nor does it circumvent authorization protocols. This project is open-source and free, intended for personal learning and academic communication.
+It operates exclusively through standard, publicly accessible web API endpoints of the Ellucian Banner 9 system using your own authenticated session. It does not exploit vulnerabilities or bypass authorization mechanisms.
 
-Do not use this software for any commercial or profit-making activities, or any purpose that violates your institution's acceptable use policies. The developer assumes no liability for any consequences arising from the improper use of this software.
+However, be aware of the following real risks:
+
+- **Institutional policy:** Automated or high-frequency interactions with your institution's registration system may violate its acceptable use policy. You are solely responsible for understanding and complying with your institution's rules before use.
+- **Account risk:** Excessive request rates could trigger rate-limiting or account suspension at your institution's discretion.
+- **No warranty:** This software is provided as-is. The developer assumes no liability for any academic, administrative, or legal consequences arising from its use.
+
+Use it on your own account, at your own risk.
 
 ## 🌌 Core Architecture
 
@@ -50,15 +56,29 @@ cd KeanSeatsCatcher
 # Install dependencies
 pip install -r requirements.txt
 
-# Ignite the engine
+# Launch
 python ui_main.py
 ```
 
 ## 🎯 Execution Protocol
 
-Operation requires a valid Ellucian Banner 9 SSO session.
+Operation requires a valid Ellucian Banner 9 SSO session. On first launch, the app will open a Chromium browser window for you to complete SSO login; the session token is then extracted automatically.
 
-Provide the target parameters via the interface. The precise definition and retrieval method of a Section ID are left as an exercise for the reader.
+**Finding your Section ID:**
+
+1. Log into your institution's Banner 9 registration portal
+2. Search for the course you want to register for
+3. Open your browser's DevTools (F12) → Network tab
+4. Click on a course section — look for a request to an endpoint like `/StudentRegistrationSsb/ssb/searchResults/searchResults`
+5. In the response JSON, locate the `courseReferenceNumber` field — this is your Section ID
+
+Enter the Section ID(s) into the interface along with your desired polling interval, then start the engine.
+
+## ⚠️ Known Limitations
+
+- **Windows only:** The Selenium-based SSO session harvesting relies on Windows-specific Chromium driver paths. Cross-platform support is not currently planned.
+- **Single session:** Only one SSO session is active at a time. If your session expires mid-run, stop the engine, re-authenticate via the auth panel, and restart.
+- **Multiple sections:** You can monitor multiple Section IDs simultaneously by adding them as separate targets in the interface. Success on one target does not auto-stop others.
 
 ## 📂 Project Structure
 
