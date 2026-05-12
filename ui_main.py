@@ -3,8 +3,10 @@ import os
 
 if getattr(sys, 'frozen', False):
     app_dir = os.path.dirname(sys.executable)
+    data_dir = sys._MEIPASS
 else:
     app_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = app_dir
 
 import time
 import threading
@@ -37,9 +39,9 @@ class BrandingWidget(QWidget):
         self.icon_label = QLabel(self)
         self.icon_label.setStyleSheet("background-color: rgba(255, 255, 255, 0.85); border-radius: 4px; padding: 2px;")
 
-        logo_path = os.path.join(app_dir, "assets", "logo.png")
+        logo_path = os.path.join(data_dir, "assets", "logo.png")
         if not os.path.exists(logo_path):
-            logo_path = os.path.join(app_dir, "assets", "logo.jpg")
+            logo_path = os.path.join(data_dir, "assets", "logo.jpg")
 
         if os.path.exists(logo_path):
             pixmap = QPixmap(logo_path)
@@ -441,9 +443,9 @@ class AboutInterface(ScrollArea):
         logo_label = QLabel()
         logo_label.setStyleSheet("background-color: rgba(255, 255, 255, 0.85); border-radius: 8px; padding: 4px;")
 
-        logo_path = os.path.join(app_dir, "assets", "logo.png")
+        logo_path = os.path.join(data_dir, "assets", "logo.png")
         if not os.path.exists(logo_path):
-            logo_path = os.path.join(app_dir, "assets", "logo.jpg")
+            logo_path = os.path.join(data_dir, "assets", "logo.jpg")
 
         if os.path.exists(logo_path):
             pixmap = QPixmap(logo_path)
@@ -465,12 +467,12 @@ class AboutInterface(ScrollArea):
         top_layout.addLayout(info_layout)
         top_layout.addStretch(1)
 
-        if os.path.exists(os.path.join(app_dir, "assets", "github.png")):
-            btn_github = PushButton(QIcon(os.path.join(app_dir, "assets", "github.png")), "GitHub")
+        if os.path.exists(os.path.join(data_dir, "assets", "github.png")):
+            btn_github = PushButton(QIcon(os.path.join(data_dir, "assets", "github.png")), "GitHub")
         else:
             btn_github = PushButton(FIF.LINK, "GitHub")
-        if os.path.exists(os.path.join(app_dir, "assets", "bilibili.png")):
-            btn_bilibili = PushButton(QIcon(os.path.join(app_dir, "assets", "bilibili.png")), "Bilibili")
+        if os.path.exists(os.path.join(data_dir, "assets", "bilibili.png")):
+            btn_bilibili = PushButton(QIcon(os.path.join(data_dir, "assets", "bilibili.png")), "Bilibili")
         else:
             btn_bilibili = PushButton(FIF.VIDEO, "Bilibili")
 
@@ -564,7 +566,7 @@ class KeanSeatsCatcherApp(FluentWindow):
         qconfig.set(qconfig.themeMode, Theme.DARK)
 
         self.setWindowTitle("KeanSeatsCatcher")
-        self.setWindowIcon(QIcon(os.path.join(app_dir, "assets", "logo.ico")))
+        self.setWindowIcon(QIcon(os.path.join(data_dir, "assets", "logo.ico")))
         self.resize(1000, 650)
         self.setMinimumSize(900, 600)
 
@@ -615,7 +617,7 @@ if __name__ == '__main__':
         pass
 
     app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon(os.path.join(app_dir, "assets", "logo.ico")))
+    app.setWindowIcon(QIcon(os.path.join(data_dir, "assets", "logo.ico")))
     window = KeanSeatsCatcherApp()
     window.show()
     sys.exit(app.exec())

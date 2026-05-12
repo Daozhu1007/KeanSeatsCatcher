@@ -4,8 +4,10 @@ import json
 
 if getattr(sys, 'frozen', False):
     app_dir = os.path.dirname(sys.executable)
+    data_dir = sys._MEIPASS
 else:
     app_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = app_dir
 
 
 class I18nManager:
@@ -15,7 +17,7 @@ class I18nManager:
         self.load_language()
 
     def load_language(self):
-        lang_file = os.path.join(app_dir, "locales", f"{self.locale}.json")
+        lang_file = os.path.join(data_dir, "locales", f"{self.locale}.json")
         try:
             with open(lang_file, 'r', encoding='utf-8') as f:
                 self.texts = json.load(f)
