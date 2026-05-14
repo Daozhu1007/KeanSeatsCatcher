@@ -65,6 +65,18 @@ class BrandingWidget(QWidget):
         pass
 
 
+class PingWorker(QThread):
+    result_signal = pyqtSignal(int)
+
+    def __init__(self, api_engine):
+        super().__init__()
+        self.api_engine = api_engine
+
+    def run(self):
+        latency = self.api_engine.test_latency()
+        self.result_signal.emit(latency)
+
+
 class MonitorWorker(QThread):
     log_signal = pyqtSignal(str, str)
     countdown_signal = pyqtSignal(str)
@@ -257,6 +269,9 @@ class MonitorInterface(QWidget):
         btn_row.addWidget(self.btn_start)
         btn_row.addWidget(self.btn_stop)
         btn_row.addStretch(1)
+        self.btn_ping = PushButton(FIF.SYNC, "")
+        self.btn_ping.setToolTip(i18n.tr("tooltip_ping"))
+        btn_row.addWidget(self.btn_ping)
         card_layout.addLayout(btn_row)
 
         self.layout.addWidget(card)
@@ -272,6 +287,7 @@ class MonitorInterface(QWidget):
 
         self.btn_start.clicked.connect(self.start_attack)
         self.btn_stop.clicked.connect(self.stop_attack)
+        self.btn_ping.clicked.connect(self.ping_server)
 
     def set_api_engine(self, engine):
         self.api_engine = engine
@@ -342,6 +358,33 @@ class MonitorInterface(QWidget):
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.log(i18n.tr("msg_stopping"))
+
+    def ping_server(self):
+        if self.api_engine is None:
+            InfoBar.error(i18n.tr("msg_engine_not_ready"), i18n.tr("msg_goto_auth"), duration=3000, parent=self)
+            return
+
+        self.btn_ping.setEnabled(False)
+        self.ping_worker = PingWorker(self.api_engine)
+        self.ping_worker.result_signal.connect(self.on_ping_result)
+        self.ping_worker.start()
+
+    def on_ping_result(self, latency):
+        self.btn_ping.setEnabled(True)
+        if latency >= 0:
+            InfoBar.success(
+                i18n.tr("msg_ping_title"),
+                i18n.tr("msg_ping_result", f"{latency} ms"),
+                duration=3000,
+                parent=self
+            )
+        else:
+            InfoBar.warning(
+                i18n.tr("msg_ping_title"),
+                i18n.tr("msg_ping_timeout"),
+                duration=3000,
+                parent=self
+            )
 
 
 class AuthInterface(QWidget):
