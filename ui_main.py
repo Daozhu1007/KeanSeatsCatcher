@@ -269,7 +269,7 @@ class MonitorInterface(QWidget):
         btn_row.addWidget(self.btn_start)
         btn_row.addWidget(self.btn_stop)
         btn_row.addStretch(1)
-        self.btn_ping = PushButton(FIF.SYNC, "")
+        self.btn_ping = PushButton(FIF.SYNC, i18n.tr("btn_ping"))
         self.btn_ping.setToolTip(i18n.tr("tooltip_ping"))
         btn_row.addWidget(self.btn_ping)
         card_layout.addLayout(btn_row)

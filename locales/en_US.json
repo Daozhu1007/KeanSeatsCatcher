@@ -14,6 +14,7 @@
     "tooltip_waitlist": "When enabled, automatically retries with Waitlist if normal registration fails (course full)",
     "btn_start": "Start",
     "btn_stop": "Stop",
+    "btn_ping": "Ping",
     "tooltip_ping": "Test server latency",
     "msg_ping_title": "Server Latency",
     "msg_ping_result": "Server latency: {0}",
