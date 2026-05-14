@@ -1,4 +1,5 @@
 import json
+import time
 import requests
 from typing import List, Tuple, Any
 
@@ -43,6 +44,15 @@ class KeanApiClient:
     def _is_timeout_error(msg) -> bool:
         msg_lower = str(msg).lower()
         return "timeout" in msg_lower or "超时" in msg_lower
+
+    def test_latency(self) -> int:
+        try:
+            start = time.perf_counter()
+            self.session.head(self.base_url, timeout=5)
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+            return elapsed_ms
+        except Exception:
+            return -1
 
     def _parse_notifications(self, items: list) -> Tuple[bool, list]:
         errors = []
