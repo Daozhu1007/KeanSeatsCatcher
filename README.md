@@ -44,7 +44,14 @@ Engineered with a focus on high-frequency state monitoring and payload delivery,
 - **Automated Session Harvesting:** Chromium-based credential extraction utilizing Selenium WebDriver to securely bridge SSO (Single Sign-On) session states.
 - **Fluent UI Implementation:** A meticulously crafted interface utilizing `qfluentwidgets`, delivering a native, responsive Dark Tech aesthetic.
 
-## ⚙️ Build & Execution
+## ⚙️ Deployment
+
+We offer two operational deployment methods. Navigate to the **[Releases](../../releases)** page to acquire the latest builds.
+
+- **Setup Installer (`KeanSeatsCatcher_vX.X_Setup.exe`):** A full Windows installer with Start Menu shortcuts, desktop icon, and automatic uninstaller registration. Recommended for most users.
+- **Portable Archive (`KeanSeatsCatcher-vX.X.zip`):** Standalone pre-built bundle. Extract and run `KeanSeatsCatcher.exe` directly — no installation required.
+
+### Running from Source
 
 Ensure you have a stable Python 3.9+ environment.
 

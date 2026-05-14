@@ -1,0 +1,32 @@
+                            DISCLAIMER
+
+This software is an external auxiliary toolkit intended for personal, non-commercial
+use only. It is shared for educational purposes — specifically the study of HTTP API
+interaction, asynchronous concurrency, and Python GUI patterns.
+
+---
+
+It operates exclusively through standard, publicly accessible web API endpoints of
+the Ellucian Banner 9 system using your own authenticated session. It does not
+exploit vulnerabilities or bypass authorization mechanisms.
+
+---
+
+However, be aware of the following real risks:
+
+1. Institutional policy:
+   Automated or high-frequency interactions with your institution's registration
+   system may violate its acceptable use policy. You are solely responsible for
+   understanding and complying with your institution's rules before use.
+
+2. Account risk:
+   Excessive request rates could trigger rate-limiting or account suspension at
+   your institution's discretion.
+
+3. No warranty:
+   This software is provided as-is. The developer assumes no liability for any
+   academic, administrative, or legal consequences arising from its use.
+
+---
+
+Use it on your own account, at your own risk.
