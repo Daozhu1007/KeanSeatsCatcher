@@ -24,6 +24,7 @@ from qfluentwidgets import (FluentWindow, SubtitleLabel, BodyLabel, LineEdit,
 from i18n import i18n, save_config, load_config
 from core_auth import KeanAuthManager
 from core_api import KeanApiClient
+from ui_autocatch import AutoCatchInterface
 
 
 class BrandingWidget(QWidget):
@@ -214,6 +215,7 @@ class MonitorInterface(QWidget):
         self.layout.setSpacing(16)
 
         self.api_engine = None
+        self.sibling = None
 
         title = SubtitleLabel(i18n.tr("monitor_title"))
         title.setStyleSheet("font-size: 26px; font-weight: bold;")
@@ -293,6 +295,17 @@ class MonitorInterface(QWidget):
         self.api_engine = engine
         self.log(i18n.tr("msg_engine_loaded"), "success")
 
+    @property
+    def is_running(self):
+        return hasattr(self, 'worker') and self.worker.isRunning()
+
+    def lock_start(self):
+        self.btn_start.setEnabled(False)
+
+    def unlock_start(self):
+        if not self.is_running:
+            self.btn_start.setEnabled(True)
+
     def log(self, msg, state="normal"):
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         prefix = ">> "
@@ -309,10 +322,19 @@ class MonitorInterface(QWidget):
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.btn_start.setText(i18n.tr("btn_start"))
+        if self.sibling:
+            self.sibling.unlock_start()
 
     def start_attack(self):
         if self.api_engine is None:
             InfoBar.error(i18n.tr("msg_engine_not_ready"), i18n.tr("msg_goto_auth"), duration=3000, parent=self)
+            return
+
+        if self.sibling and self.sibling.is_running:
+            InfoBar.warning(
+                "Busy",
+                i18n.tr("msg_autocatch_busy"),
+                duration=3000, parent=self)
             return
 
         raw_sections = self.section_input.text().strip()
@@ -351,12 +373,17 @@ class MonitorInterface(QWidget):
         self.worker.finished_signal.connect(self.on_worker_finished)
         self.worker.start()
 
+        if self.sibling:
+            self.sibling.lock_start()
+
     def stop_attack(self):
         if hasattr(self, 'worker'):
             self.worker.is_running = False
             self.worker._stop_event.set()
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        if self.sibling:
+            self.sibling.unlock_start()
         self.log(i18n.tr("msg_stopping"))
 
     def ping_server(self):
@@ -638,12 +665,18 @@ class KeanSeatsCatcherApp(FluentWindow):
         )
 
         self.monitor_interface = MonitorInterface(self)
+        self.autocatch_interface = AutoCatchInterface(self)
         self.auth_interface = AuthInterface(self)
         self.about_interface = AboutInterface(self)
 
         self.auth_interface.engine_ready_signal.connect(self.monitor_interface.set_api_engine)
+        self.auth_interface.engine_ready_signal.connect(self.autocatch_interface.set_api_engine)
+
+        self.monitor_interface.sibling = self.autocatch_interface
+        self.autocatch_interface.sibling = self.monitor_interface
 
         self.addSubInterface(self.monitor_interface, FIF.VIEW, i18n.tr("tab_monitor"))
+        self.addSubInterface(self.autocatch_interface, FIF.ZOOM, i18n.tr("tab_autocatch"))
         self.addSubInterface(self.auth_interface, FIF.SETTING, i18n.tr("tab_auth"))
         self.addSubInterface(self.about_interface, FIF.INFO, i18n.tr("tab_about"), position=NavigationItemPosition.BOTTOM)
 

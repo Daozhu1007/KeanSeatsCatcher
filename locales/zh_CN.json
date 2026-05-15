@@ -101,5 +101,33 @@
 
     "set_lang": "界面语言:",
     "msg_lang_changed": "语言已切换",
-    "msg_lang_restart": "请重启软件以使语言设置生效。"
+    "msg_lang_restart": "请重启软件以使语言设置生效。",
+
+    "tab_autocatch": "自动捡漏",
+    "autocatch_title": "自动捡漏监控",
+    "placeholder_interval_autocatch": "如: 15",
+    "btn_start_monitoring": "开始监控",
+    "autocatch_status_idle": "空闲",
+    "autocatch_status_polling": "轮询中 (第{0}轮)...",
+    "autocatch_status_attacking": "检测到空位! 抢注中...",
+    "autocatch_round_start": "--- 自动捡漏 第{0}轮 ---",
+    "autocatch_check_error": "余量检测失败: {0}",
+    "autocatch_seat_found": "检测到空位! Section {0}: 剩余 {1} 个名额",
+    "autocatch_attack_failed": "抢注失败: {0}, 恢复轮询...",
+    "autocatch_no_seats": "目标 Section 暂无空位。",
+    "autocatch_stopping": "正在停止自动捡漏...",
+    "toast_success_title": "自动捡漏成功!",
+    "toast_success_body": "Section 抢注成功! 请前往课表确认。",
+    "toast_seat_found_title": "检测到空位!",
+    "toast_seat_found_body": "Section {0}: 检测到空位, 正在抢注...",
+    "msg_monitor_busy": "监控面板正在运行中，请先停止后再启动自动捡漏。",
+    "msg_autocatch_busy": "自动捡漏正在运行中，请先停止后再启动监控面板。",
+
+    "log_section_check_http": "Section {0}: HTTP状态码 {1}",
+    "log_section_check_non_json": "Section {0}: 响应非JSON格式",
+    "log_section_open": "Section {0}: 剩余 {1} 个名额 ({2}/{3})",
+    "log_section_waitlist_open": "Section {0}: 已满但候补队列有位置 ({1}/{2})",
+    "log_section_full": "Section {0}: 已满 ({1}/{2})",
+    "log_section_check_timeout": "Section {0}: 检测请求超时",
+    "log_section_check_error": "Section {0}: 检测异常 - {1}"
 }
