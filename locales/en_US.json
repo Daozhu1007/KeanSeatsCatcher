@@ -101,5 +101,33 @@
 
     "set_lang": "Language:",
     "msg_lang_changed": "Language Changed",
-    "msg_lang_restart": "Please restart the application to apply the language setting."
+    "msg_lang_restart": "Please restart the application to apply the language setting.",
+
+    "tab_autocatch": "Auto-Catch",
+    "autocatch_title": "Auto-Catch Monitor",
+    "placeholder_interval_autocatch": "e.g.: 15",
+    "btn_start_monitoring": "Start Monitoring",
+    "autocatch_status_idle": "Idle",
+    "autocatch_status_polling": "Polling (Round #{0})...",
+    "autocatch_status_attacking": "Seat found! Attacking...",
+    "autocatch_round_start": "--- Auto-Catch Round #{0} ---",
+    "autocatch_check_error": "Check error: {0}",
+    "autocatch_seat_found": "Seat found! Section {0}: {1} seat(s) available",
+    "autocatch_attack_failed": "Attack failed: {0}, resuming polling...",
+    "autocatch_no_seats": "No seats available in target sections.",
+    "autocatch_stopping": "Stopping Auto-Catch...",
+    "toast_success_title": "Auto-Catch Success!",
+    "toast_success_body": "Section registered successfully. Please check your schedule.",
+    "toast_seat_found_title": "Seat Detected!",
+    "toast_seat_found_body": "Section {0}: seats available. Attacking...",
+    "msg_monitor_busy": "Monitor is running. Please stop it before starting Auto-Catch.",
+    "msg_autocatch_busy": "Auto-Catch is running. Please stop it before starting Monitor.",
+
+    "log_section_check_http": "Section {0}: HTTP {1}",
+    "log_section_check_non_json": "Section {0}: non-JSON response",
+    "log_section_open": "Section {0}: {1} seat(s) available ({2}/{3})",
+    "log_section_waitlist_open": "Section {0}: Full but waitlist has room ({1}/{2})",
+    "log_section_full": "Section {0}: Full ({1}/{2})",
+    "log_section_check_timeout": "Section {0}: check timeout",
+    "log_section_check_error": "Section {0}: check error - {1}"
 }

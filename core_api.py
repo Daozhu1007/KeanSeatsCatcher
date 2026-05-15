@@ -45,6 +45,63 @@ class KeanApiClient:
         msg_lower = str(msg).lower()
         return "timeout" in msg_lower or "超时" in msg_lower
 
+    def check_section_status(self, section_id: str, enable_waitlist: bool = False) -> bool:
+        """
+        Query section availability via the real Ellucian Banner API.
+
+        Returns True if seats are available (Available > 0) or if waitlist
+        capacity remains (Waitlisted < WaitlistMaximum) when enable_waitlist is set.
+        Returns False on any error — the caller continues polling.
+        """
+        root = '/'.join(self.base_url.split('/')[:3])
+        url = f"{root}/Student/Student/Courses/SectionDetails"
+        payload = {"sectionId": str(section_id), "studentId": str(self.student_id)}
+
+        try:
+            resp = self.session.post(url, json=payload, timeout=(1.5, 8))
+
+            if resp.status_code != 200:
+                self._log(
+                    i18n.tr("log_section_check_http", section_id, resp.status_code),
+                    "debug")
+                return False
+
+            try:
+                data = resp.json()
+            except (requests.exceptions.JSONDecodeError, json.JSONDecodeError, ValueError):
+                self._log(i18n.tr("log_section_check_non_json", section_id), "debug")
+                return False
+
+            available = data.get('Available', 0)
+            enrolled = data.get('Enrolled', '?')
+            capacity = data.get('Capacity', '?')
+            waitlisted = data.get('Waitlisted', 0)
+            waitlist_max = data.get('WaitlistMaximum', 0)
+
+            if available > 0:
+                self._log(
+                    i18n.tr("log_section_open", section_id, available, enrolled, capacity),
+                    "success")
+                return True
+
+            if enable_waitlist and waitlisted < waitlist_max:
+                self._log(
+                    i18n.tr("log_section_waitlist_open", section_id, waitlisted, waitlist_max),
+                    "normal")
+                return True
+
+            self._log(
+                i18n.tr("log_section_full", section_id, enrolled, capacity),
+                "normal")
+            return False
+
+        except requests.exceptions.Timeout:
+            self._log(i18n.tr("log_section_check_timeout", section_id), "debug")
+            return False
+        except requests.exceptions.RequestException as e:
+            self._log(i18n.tr("log_section_check_error", section_id, e), "debug")
+            return False
+
     def test_latency(self) -> int:
         try:
             start = time.perf_counter()
