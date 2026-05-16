@@ -14,7 +14,7 @@ class AutoCatchWorker(QThread):
     status_signal = pyqtSignal(int)
     seat_found_signal = pyqtSignal(str, int)
     attack_result_signal = pyqtSignal(bool, str)
-    round_signal = pyqtSignal(int)
+    round_signal = pyqtSignal(int, int)
     session_expired_signal = pyqtSignal()
     session_recovered_signal = pyqtSignal(bool)
 
@@ -27,6 +27,7 @@ class AutoCatchWorker(QThread):
         self.enable_waitlist = enable_waitlist
         self.auth_manager = auth_manager
         self.is_running = True
+        self.recovery_count = 0
         self._stop_event = threading.Event()
 
         self.api_engine.log_callback = lambda msg, level="normal": self.log_signal.emit(msg, level)
@@ -58,6 +59,7 @@ class AutoCatchWorker(QThread):
             creds = self.auth_manager.silent_relogin()
             self.api_engine.update_credentials(
                 creds["cookies"], creds["verification_token"])
+            self.recovery_count += 1
             self.log_signal.emit(
                 "[SUCCESS] Session recovered. Resuming Auto-Catch...",
                 "success")
@@ -77,7 +79,7 @@ class AutoCatchWorker(QThread):
 
         while self.is_running:
             round_count += 1
-            self.round_signal.emit(round_count)
+            self.round_signal.emit(round_count, self.recovery_count)
             self.status_signal.emit(STATE_POLLING)
             self.log_signal.emit(
                 i18n.tr("autocatch_round_start", round_count), "normal")

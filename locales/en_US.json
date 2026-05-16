@@ -108,7 +108,7 @@
     "placeholder_interval_autocatch": "e.g.: 15",
     "btn_start_monitoring": "Start Monitoring",
     "autocatch_status_idle": "Idle",
-    "autocatch_status_polling": "Polling (Round #{0})...",
+    "autocatch_status_polling": "Polling (Round #{0}) | Recoveries: {1}...",
     "autocatch_status_attacking": "Seat found! Attacking...",
     "autocatch_round_start": "--- Auto-Catch Round #{0} ---",
     "autocatch_check_error": "Check error: {0}",

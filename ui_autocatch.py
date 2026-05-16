@@ -211,9 +211,9 @@ class AutoCatchInterface(QWidget):
         else:
             self.log(msg, "error")
 
-    def on_round(self, count):
+    def on_round(self, round_count, recovery_count):
         self.status_label.setText(
-            i18n.tr("autocatch_status_polling", count))
+            i18n.tr("autocatch_status_polling", round_count, recovery_count))
 
     def on_session_expired(self):
         self.status_label.setText(i18n.tr("autocatch_status_recovering"))
