@@ -129,5 +129,12 @@
     "log_section_waitlist_open": "Section {0}: 已满但候补队列有位置 ({1}/{2})",
     "log_section_full": "Section {0}: 已满 ({1}/{2})",
     "log_section_check_timeout": "Section {0}: 检测请求超时",
-    "log_section_check_error": "Section {0}: 检测异常 - {1}"
+    "log_section_check_error": "Section {0}: 检测异常 - {1}",
+
+    "log_session_expired_http": "Section {0}: HTTP {1} (会话已过期)",
+    "log_session_expired_redirect": "Section {0}: 被重定向至登录页 (会话已过期)",
+    "log_session_expired_register": "选课请求返回 HTTP {0} (会话已过期)",
+    "log_session_expired_register_redirect": "选课请求被重定向至登录页 (会话已过期)",
+    "log_session_expired_confirm": "确认请求返回 HTTP {0} (会话已过期)",
+    "autocatch_status_recovering": "会话已过期，正在自动重新认证..."
 }

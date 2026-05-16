@@ -19,6 +19,7 @@ class AutoCatchInterface(QWidget):
         self.layout.setSpacing(16)
 
         self.api_engine = None
+        self.auth_manager = None
         self.sibling = None
         self._is_running = False
 
@@ -93,6 +94,9 @@ class AutoCatchInterface(QWidget):
         self.api_engine = engine
         self.log(i18n.tr("msg_engine_loaded"), "success")
 
+    def set_auth_manager(self, auth_manager):
+        self.auth_manager = auth_manager
+
     def lock_start(self):
         self.btn_start.setEnabled(False)
 
@@ -158,12 +162,15 @@ class AutoCatchInterface(QWidget):
         waitlist_enabled = self.waitlist_switch.isChecked()
         self.worker = AutoCatchWorker(
             self.api_engine, section_list, interval_time,
-            enable_waitlist=waitlist_enabled)
+            enable_waitlist=waitlist_enabled,
+            auth_manager=self.auth_manager)
         self.worker.log_signal.connect(self.log)
         self.worker.status_signal.connect(self.on_status)
         self.worker.seat_found_signal.connect(self.on_seat_found)
         self.worker.attack_result_signal.connect(self.on_attack_result)
         self.worker.round_signal.connect(self.on_round)
+        self.worker.session_expired_signal.connect(self.on_session_expired)
+        self.worker.session_recovered_signal.connect(self.on_session_recovered)
         self.worker.start()
 
     def stop_monitoring(self):
@@ -206,6 +213,17 @@ class AutoCatchInterface(QWidget):
     def on_round(self, count):
         self.status_label.setText(
             i18n.tr("autocatch_status_polling", count))
+
+    def on_session_expired(self):
+        self.status_label.setText(i18n.tr("autocatch_status_recovering"))
+        self.status_label.setStyleSheet("color: #e6a23c; margin-top: 4px;")
+
+    def on_session_recovered(self, success):
+        if success:
+            self.status_label.setStyleSheet("color: #a0a0a0; margin-top: 4px;")
+        else:
+            self.status_label.setText(i18n.tr("autocatch_status_idle"))
+            self.status_label.setStyleSheet("color: #a0a0a0; margin-top: 4px;")
 
     def _show_toast(self, title, msg):
         try:

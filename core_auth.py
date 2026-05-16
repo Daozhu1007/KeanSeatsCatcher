@@ -2,7 +2,11 @@ import json
 import time
 from selenium import webdriver
 from selenium.webdriver.edge.options import Options
-from selenium.common.exceptions import WebDriverException, InvalidSessionIdException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
+from selenium.common.exceptions import (WebDriverException, InvalidSessionIdException,
+                                        TimeoutException, NoSuchElementException)
 
 from i18n import i18n
 
@@ -119,6 +123,106 @@ class KeanAuthManager:
 
         print(f"Credentials extracted. Student ID: {student_id}")
         return credentials
+
+    def silent_relogin(self) -> dict:
+        """
+        Re-authenticate without user interaction.
+
+        Launches a fresh browser (reusing the local Edge profile so saved
+        credentials persist). If redirected to Okta, automatically clicks
+        the login button — no 2FA is required when the browser profile's
+        session is still warm.
+
+        Returns the same credential dict as extract_credentials() on success.
+        Raises RuntimeError if the automated flow times out.
+        """
+        if self.driver is not None:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            finally:
+                self.driver = None
+
+        print("[Auto-Recovery] Launching browser for silent re-authentication...")
+        self.launch_browser()
+
+        print("[Auto-Recovery] Waiting for page to stabilize...")
+        time.sleep(3)
+
+        # Check if we landed on an Okta login page
+        current_url = ""
+        try:
+            current_url = self.driver.current_url
+        except Exception:
+            pass
+
+        if "okta" in current_url.lower():
+            print("[Auto-Recovery] Detected Okta login page. Attempting auto-click...")
+            self._click_okta_login()
+            print("[Auto-Recovery] Waiting for post-login redirect...")
+        else:
+            print("[Auto-Recovery] Not on Okta page, checking if already logged in...")
+
+        # Wait until we reach the DegreePlans page (or timeout)
+        try:
+            WebDriverWait(self.driver, 30).until(
+                lambda d: "DegreePlans" in (d.current_url or "")
+            )
+        except TimeoutException:
+            raise RuntimeError(
+                "Silent re-login timed out: did not reach DegreePlans page. "
+                "A manual re-login may be required."
+            )
+
+        print("[Auto-Recovery] Reached DegreePlans. Extracting credentials...")
+        creds = self.extract_credentials()
+
+        if "error" in creds:
+            raise RuntimeError(
+                f"Credential extraction failed during recovery: {creds['error']}"
+            )
+
+        print(f"[Auto-Recovery] Credentials extracted. Student ID: {creds.get('student_id')}")
+        return creds
+
+    def _click_okta_login(self):
+        """
+        Click the Okta sign-in button using multiple fallback selectors.
+        Okta's login page may vary — we try several common patterns.
+        """
+        selectors = [
+            # Okta classic / custom widget
+            (By.CSS_SELECTOR, "input[type='submit']"),
+            (By.CSS_SELECTOR, "input[type='submit'][value*='Sign']"),
+            (By.CSS_SELECTOR, "input[type='submit'][value*='登录']"),
+            # Okta Identity Engine / modern
+            (By.CSS_SELECTOR, "button[type='submit']"),
+            (By.CSS_SELECTOR, ".button-primary"),
+            (By.CSS_SELECTOR, ".btn-primary"),
+            # Generic "next" or "verify" buttons
+            (By.XPATH, "//input[@type='submit'][contains(@value,'Sign')]"),
+            (By.XPATH, "//input[@type='submit'][contains(@value,'登录')]"),
+            (By.XPATH, "//button[contains(text(),'Sign')]"),
+            (By.XPATH, "//button[contains(text(),'登录')]"),
+            (By.XPATH, "//a[contains(@class,'button')][contains(@href,'login')]"),
+        ]
+
+        for by, selector in selectors:
+            try:
+                btn = WebDriverWait(self.driver, 5).until(
+                    EC.element_to_be_clickable((by, selector))
+                )
+                if btn and btn.is_displayed():
+                    print(f"[Auto-Recovery] Clicking login button: {selector}")
+                    btn.click()
+                    return
+            except (TimeoutException, NoSuchElementException):
+                continue
+
+        raise RuntimeError(
+            "Could not locate Okta login button. The page layout may have changed."
+        )
 
     def close_browser(self):
         if self.driver:

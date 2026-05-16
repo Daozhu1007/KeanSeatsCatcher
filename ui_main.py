@@ -671,6 +671,7 @@ class KeanSeatsCatcherApp(FluentWindow):
 
         self.auth_interface.engine_ready_signal.connect(self.monitor_interface.set_api_engine)
         self.auth_interface.engine_ready_signal.connect(self.autocatch_interface.set_api_engine)
+        self.autocatch_interface.set_auth_manager(self.auth_interface.auth_manager)
 
         self.monitor_interface.sibling = self.autocatch_interface
         self.autocatch_interface.sibling = self.monitor_interface
