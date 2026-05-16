@@ -105,7 +105,7 @@ Or download the pre-built packages from [Releases](../../releases):
 python export_session.py
 
 # Start polling with the exported session
-python cloud_cli.py --sections 20456,21421 --interval 15 --load-session session.json
+python cloud_cli.py --sections 12345,67890 --interval 15 --load-session session.json
 ```
 
 ### CLI (Linux Server / Headless Deploy)
@@ -120,7 +120,7 @@ scp session.json user@vps:/opt/ksc/
 
 # --- On server ---
 pip install -r requirements.txt
-python cloud_cli.py --sections 20456,21421 --interval 15 --waitlist \
+python cloud_cli.py --sections 12345,67890 --interval 15 --waitlist \
     --load-session session.json \
     --webhook https://discord.com/api/webhooks/xxx/yyy
 ```
