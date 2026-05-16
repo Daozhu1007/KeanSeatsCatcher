@@ -1,5 +1,5 @@
 ; ─────────────────────────────────────────────────────────────
-; KeanSeatsCatcher v1.1 — Inno Setup Installer Script
+; KeanSeatsCatcher v1.2 — Inno Setup Installer Script
 ; ─────────────────────────────────────────────────────────────
 
 #define MyAppName       "KeanSeatsCatcher"
@@ -23,7 +23,7 @@ AppUpdatesURL={#MyAppURL}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 OutputDir=.\dist
-OutputBaseFilename=KeanSeatsCatcher_v1.1_Setup
+OutputBaseFilename=KeanSeatsCatcher_v{#MyAppVersion}_Setup
 
 ; ── Appearance ──────────────────────────────────────────────
 SetupIconFile=.\assets\logo.ico
