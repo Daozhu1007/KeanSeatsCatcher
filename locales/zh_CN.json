@@ -108,7 +108,7 @@
     "placeholder_interval_autocatch": "如: 15",
     "btn_start_monitoring": "开始监控",
     "autocatch_status_idle": "空闲",
-    "autocatch_status_polling": "轮询中 (第{0}轮)...",
+    "autocatch_status_polling": "轮询中 (第{0}轮) | 断线重连: {1}次...",
     "autocatch_status_attacking": "检测到空位! 抢注中...",
     "autocatch_round_start": "--- 自动捡漏 第{0}轮 ---",
     "autocatch_check_error": "余量检测失败: {0}",
