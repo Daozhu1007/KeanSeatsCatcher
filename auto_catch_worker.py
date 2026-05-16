@@ -130,6 +130,6 @@ class AutoCatchWorker(QThread):
                     i18n.tr("autocatch_no_seats"), "normal")
 
             if self.is_running:
-                self._sleep(self.interval)
+                self._sleep(max(1.0, self.interval))
 
         self.status_signal.emit(STATE_IDLE)
