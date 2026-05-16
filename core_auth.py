@@ -16,14 +16,19 @@ class KeanAuthManager:
         self.driver = None
         self.login_url = "https://kean-ss.colleague.elluciancloud.com/Student/Planning/DegreePlans"
 
-    def launch_browser(self):
-        print("Initializing Edge browser...")
+    def launch_browser(self, headless: bool = False):
+        print(f"Initializing Edge browser (headless={headless})...")
         try:
             options = Options()
             options.add_argument('--disable-blink-features=AutomationControlled')
             options.add_experimental_option("excludeSwitches", ["enable-automation"])
             options.add_experimental_option('useAutomationExtension', False)
             options.add_experimental_option("detach", True)
+
+            if headless:
+                options.add_argument('--headless')
+                options.add_argument('--disable-gpu')
+                options.add_argument('--window-size=1920,1080')
 
             self.driver = webdriver.Edge(options=options)
 
@@ -32,7 +37,10 @@ class KeanAuthManager:
             })
 
             self.driver.get(self.login_url)
-            print("Browser launched. Please complete SSO login manually...")
+            if headless:
+                print("Headless browser launched. Proceeding with automated login...")
+            else:
+                print("Browser launched. Please complete SSO login manually...")
 
         except Exception as e:
             print(f"Browser launch failed: {str(e)}")
@@ -124,7 +132,7 @@ class KeanAuthManager:
         print(f"Credentials extracted. Student ID: {student_id}")
         return credentials
 
-    def silent_relogin(self) -> dict:
+    def silent_relogin(self, headless: bool = False) -> dict:
         """
         Re-authenticate without user interaction.
 
@@ -132,6 +140,8 @@ class KeanAuthManager:
         credentials persist). If redirected to Okta, automatically clicks
         the login button — no 2FA is required when the browser profile's
         session is still warm.
+
+        Set headless=True for cloud/headless deployments.
 
         Returns the same credential dict as extract_credentials() on success.
         Raises RuntimeError if the automated flow times out.
@@ -145,7 +155,7 @@ class KeanAuthManager:
                 self.driver = None
 
         print("[Auto-Recovery] Launching browser for silent re-authentication...")
-        self.launch_browser()
+        self.launch_browser(headless=headless)
 
         print("[Auto-Recovery] Waiting for page to stabilize...")
         time.sleep(3)
