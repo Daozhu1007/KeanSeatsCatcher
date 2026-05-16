@@ -13,6 +13,11 @@
   <img src="https://img.shields.io/badge/python-3.10+-blue" alt="Python Version">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   <a href="https://github.com/Daozhu1007/KeanSeatsCatcher"><img src="https://img.shields.io/github/stars/Daozhu1007/KeanSeatsCatcher?style=flat" alt="Stars"></a>
+  <a href="https://space.bilibili.com/477852567"><img src="https://img.shields.io/badge/Bilibili-Limitime-00A1D6?logo=bilibili" alt="Bilibili"></a>
+</p>
+
+<p align="center">
+  <img src="docs/screenshot.png" width="800" alt="KeanSeatsCatcher GUI Screenshot">
 </p>
 
 ---
