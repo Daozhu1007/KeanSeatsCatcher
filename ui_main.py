@@ -547,7 +547,7 @@ class AboutInterface(ScrollArea):
         else:
             btn_bilibili = PushButton(FIF.VIDEO, "Bilibili")
 
-        btn_github.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/Daozhu1007")))
+        btn_github.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://github.com/Daozhu1007/KeanSeatsCatcher")))
         btn_bilibili.clicked.connect(lambda: QDesktopServices.openUrl(QUrl("https://space.bilibili.com/477852567")))
 
         top_layout.addWidget(btn_github)
