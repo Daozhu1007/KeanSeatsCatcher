@@ -284,6 +284,7 @@ class MonitorInterface(QWidget):
 
         self.log_box = TextEdit()
         self.log_box.setReadOnly(True)
+        self.log_box.document().setMaximumBlockCount(1000)
         self.log_box.setStyleSheet("font-family: Consolas; font-size: 13px; background: #1e1e1e;")
         self.layout.addWidget(self.log_box, 1)
 
