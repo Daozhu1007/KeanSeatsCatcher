@@ -10,6 +10,11 @@ from i18n import i18n
 WAITLIST_ACTION = "Waitlist"
 
 
+class SessionExpiredError(Exception):
+    """Raised when the API session has expired (401/403/login redirect)."""
+    pass
+
+
 class KeanApiClient:
     def __init__(self, cookies_dict: dict, verification_token: str, student_id: str):
         self.session = requests.Session()
@@ -28,6 +33,15 @@ class KeanApiClient:
             'content-type': 'application/json; charset=UTF-8',
             'x-requested-with': 'XMLHttpRequest',
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0'
+        })
+
+    def update_credentials(self, cookies_dict: dict, verification_token: str):
+        """Hot-swap session credentials without recreating the engine."""
+        self.session.cookies.clear()
+        for name, value in cookies_dict.items():
+            self.session.cookies.set(name, value)
+        self.session.headers.update({
+            '__requestverificationtoken': verification_token
         })
 
     def _log(self, msg: str, level: str = "normal"):
@@ -51,7 +65,8 @@ class KeanApiClient:
 
         Returns True if seats are available (Available > 0) or if waitlist
         capacity remains (Waitlisted < WaitlistMaximum) when enable_waitlist is set.
-        Returns False on any error — the caller continues polling.
+        Returns False on transient errors — the caller continues polling.
+        Raises SessionExpiredError on 401/403/login redirect.
         """
         root = '/'.join(self.base_url.split('/')[:3])
         url = f"{root}/Student/Student/Courses/SectionDetails"
@@ -59,6 +74,13 @@ class KeanApiClient:
 
         try:
             resp = self.session.post(url, json=payload, timeout=(1.5, 8))
+
+            if resp.status_code in (401, 403):
+                self._log(
+                    i18n.tr("log_session_expired_http", section_id, resp.status_code),
+                    "error")
+                raise SessionExpiredError(
+                    f"HTTP {resp.status_code} on section check")
 
             if resp.status_code != 200:
                 self._log(
@@ -69,6 +91,13 @@ class KeanApiClient:
             try:
                 data = resp.json()
             except (requests.exceptions.JSONDecodeError, json.JSONDecodeError, ValueError):
+                # Check if response is a login page (session expired)
+                text_lower = resp.text[:2000].lower()
+                if any(marker in text_lower for marker in ("okta", "login", "signin", "sign in")):
+                    self._log(
+                        i18n.tr("log_session_expired_redirect", section_id),
+                        "error")
+                    raise SessionExpiredError("Redirected to login page")
                 self._log(i18n.tr("log_section_check_non_json", section_id), "debug")
                 return False
 
@@ -95,6 +124,8 @@ class KeanApiClient:
                 "normal")
             return False
 
+        except SessionExpiredError:
+            raise
         except requests.exceptions.Timeout:
             self._log(i18n.tr("log_section_check_timeout", section_id), "debug")
             return False
@@ -133,10 +164,19 @@ class KeanApiClient:
             self._log(i18n.tr("log_send_package", section_ids))
             resp = self.session.post(url, json=payload, timeout=(1.5, 12))
 
+            if resp.status_code in (401, 403):
+                self._log(i18n.tr("log_session_expired_register", resp.status_code), "error")
+                raise SessionExpiredError(
+                    f"HTTP {resp.status_code} on register")
+
             if resp.status_code == 200:
                 try:
                     response_data = resp.json()
                 except (requests.exceptions.JSONDecodeError, json.JSONDecodeError, ValueError):
+                    text_lower = resp.text[:2000].lower()
+                    if any(marker in text_lower for marker in ("okta", "login", "signin", "sign in")):
+                        self._log(i18n.tr("log_session_expired_register_redirect"), "error")
+                        raise SessionExpiredError("Redirected to login page on register")
                     self._log(i18n.tr("log_non_json_response"), "error")
                     return False, i18n.tr("msg_response_format_error", resp.text[:200])
 
@@ -162,6 +202,8 @@ class KeanApiClient:
                 self._log(i18n.tr("log_http_error", resp.status_code), "error")
                 return False, f"HTTP {resp.status_code}: {resp.text[:300]}"
 
+        except SessionExpiredError:
+            raise
         except requests.exceptions.ReadTimeout:
             self._log(i18n.tr("log_read_timeout"), "error")
             return False, i18n.tr("log_read_timeout")
@@ -179,6 +221,10 @@ class KeanApiClient:
         try:
             self._log(i18n.tr("log_send_confirm"))
             resp = self.session.post(url, json=payload, timeout=(1.5, 12))
+            if resp.status_code in (401, 403):
+                self._log(i18n.tr("log_session_expired_confirm", resp.status_code), "error")
+                raise SessionExpiredError(
+                    f"HTTP {resp.status_code} on confirm")
             if resp.status_code == 200:
                 self._log(i18n.tr("log_confirm_ok"), "success")
                 return True

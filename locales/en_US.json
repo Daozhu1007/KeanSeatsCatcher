@@ -129,5 +129,12 @@
     "log_section_waitlist_open": "Section {0}: Full but waitlist has room ({1}/{2})",
     "log_section_full": "Section {0}: Full ({1}/{2})",
     "log_section_check_timeout": "Section {0}: check timeout",
-    "log_section_check_error": "Section {0}: check error - {1}"
+    "log_section_check_error": "Section {0}: check error - {1}",
+
+    "log_session_expired_http": "Section {0}: HTTP {1} (session expired)",
+    "log_session_expired_redirect": "Section {0}: redirected to login page (session expired)",
+    "log_session_expired_register": "HTTP {0} on registration (session expired)",
+    "log_session_expired_register_redirect": "Redirected to login page on registration (session expired)",
+    "log_session_expired_confirm": "HTTP {0} on confirmation (session expired)",
+    "autocatch_status_recovering": "Session expired. Re-authenticating..."
 }
