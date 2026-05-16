@@ -94,21 +94,33 @@ pip install -r requirements.txt
 python ui_main.py
 ```
 
-Or download the pre-built `.exe` from [Releases](../../releases).
+Or download the pre-built packages from [Releases](../../releases):
+- `KeanSeatsCatcher_vX.X_Setup.exe` — full installer (Start Menu shortcuts, uninstaller)
+- `KeanSeatsCatcher-vX.X.zip` — portable, extract and run
 
-### CLI (Linux Server)
+### CLI (Windows / Local Test)
 
 ```bash
-# --- On your local Windows machine (one time) ---
+# Export session (one-time, visible browser)
+python export_session.py
+
+# Start polling with the exported session
+python cloud_cli.py --sections 20456,21421 --interval 15 --load-session session.json
+```
+
+### CLI (Linux Server / Headless Deploy)
+
+```bash
+# --- On local machine (one time) ---
 python export_session.py
 # → session.json
 
 # --- Copy to server ---
 scp session.json user@vps:/opt/ksc/
 
-# --- On the server ---
+# --- On server ---
 pip install -r requirements.txt
-python cloud_cli.py --sections 26012,26686 --interval 15 --waitlist \
+python cloud_cli.py --sections 20456,21421 --interval 15 --waitlist \
     --load-session session.json \
     --webhook https://discord.com/api/webhooks/xxx/yyy
 ```
