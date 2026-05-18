@@ -20,44 +20,43 @@ class KeanAuthManager:
 
     def launch_browser(self, headless: bool = False):
         """
-        Try Edge → Chrome → Safari (macOS only) in order.
-        Each attempt is guarded by a 15-second timeout — if a browser
-        hangs (e.g. driver download stalls on a slow connection), we
-        fall through to the next candidate instead of freezing forever.
+        Per-browser 15-second timeout prevents a hung driver download
+        from freezing the entire chain.
+
+        On macOS Safari is tried first — it uses the built-in
+        safaridriver (zero download), so it works even on slow/flaky
+        networks where the Selenium Manager CDN is unreachable.
         """
         last_error = None
 
-        # --- Chain 1: Microsoft Edge ---
-        try:
-            self._try_browser_with_timeout("Edge", lambda: self._try_edge(headless))
-            return
-        except (WebDriverException, TimeoutError) as e:
-            print(f"Edge unavailable: {e}")
-            last_error = e
-
-        # --- Chain 2: Google Chrome ---
-        try:
-            self._try_browser_with_timeout("Chrome", lambda: self._try_chrome(headless))
-            return
-        except (WebDriverException, TimeoutError) as e:
-            print(f"Chrome unavailable: {e}")
-            last_error = e
-
-        # --- Chain 3: Safari (macOS only, no headless) ---
-        if headless:
-            print("Safari does not support headless mode, skipping.")
-        else:
+        chains = self._browser_chain(headless)
+        for name, fn in chains:
             try:
-                self._try_browser_with_timeout("Safari", lambda: self._try_safari())
+                self._try_browser_with_timeout(name, fn)
                 return
             except (WebDriverException, TimeoutError) as e:
-                print(f"Safari unavailable: {e}")
+                print(f"{name} unavailable: {e}")
                 last_error = e
 
         raise RuntimeError(
             "No supported browser found. Please install Chrome or Edge.\n"
             f"Last error: {last_error}"
         )
+
+    def _browser_chain(self, headless):
+        """Return the ordered list of (name, callable) to try."""
+        import sys
+        if sys.platform == "darwin" and not headless:
+            # Safari uses built-in driver — no download, instant start
+            return [
+                ("Safari",  lambda: self._try_safari()),
+                ("Chrome",  lambda: self._try_chrome(headless)),
+                ("Edge",    lambda: self._try_edge(headless)),
+            ]
+        return [
+            ("Edge",    lambda: self._try_edge(headless)),
+            ("Chrome",  lambda: self._try_chrome(headless)),
+        ]
 
     def _try_edge(self, headless: bool):
         options = EdgeOptions()
@@ -101,18 +100,22 @@ class KeanAuthManager:
 
     def _try_browser_with_timeout(self, name, fn, timeout=15):
         """
-        Run a browser launch function inside a thread with a timeout.
-        If the thread does not complete within *timeout* seconds,
-        raises TimeoutError so the caller can fall through to the
-        next browser candidate.
+        Run *fn* in a daemon thread with a timeout guard.
+
+        CRITICAL: executor.shutdown(wait=False) is used instead of the
+        ``with`` statement. The context-manager __exit__ calls
+        shutdown(wait=True), which would block until the hung thread
+        finishes — defeating the purpose of the timeout.
         """
         print(f"Trying {name} browser (timeout={timeout}s)...")
-        with ThreadPoolExecutor(max_workers=1) as executor:
+        executor = ThreadPoolExecutor(max_workers=1)
+        try:
             future = executor.submit(fn)
-            try:
-                future.result(timeout=timeout)
-            except FutureTimeoutError:
-                raise TimeoutError(f"{name} launch timed out after {timeout}s")
+            future.result(timeout=timeout)
+        except FutureTimeoutError:
+            raise TimeoutError(f"{name} launch timed out after {timeout}s")
+        finally:
+            executor.shutdown(wait=False)
 
     def extract_credentials(self) -> dict:
         if not self.driver:
