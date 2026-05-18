@@ -144,6 +144,8 @@ python export_session.py
 
 Complete the SSO login in the browser window. `session.json` holds your encrypted cookies and token.
 
+> **Smart Browser Fallback.** `export_session.py` ships with an automatic browser fallback chain — it tries **Edge → Chrome → Safari** (macOS: **Safari → Chrome → Edge**) in order. The first available browser wins. Mac users: there is zero need to install Edge or Chrome; the script picks up Safari out of the box.
+
 #### Step 2: Prepare the server directory
 
 ```bash
@@ -233,6 +235,20 @@ services:
 ```bash
 cd KeanSeatsCatcher
 ```
+
+> ⚠️ **CRITICAL: Prevent Volume Mount Trap.** The compose file bind-mounts `./cloud_sniper.log:/app/cloud_sniper.log`. If `cloud_sniper.log` does **not** exist on the host at first launch, Docker silently creates it as a **directory** instead of a file. Python's `logging` module then hits `IsADirectoryError: [Errno 21]`, and the container loops into a crash-restart death spiral.
+>
+> **Create the file before the first `docker compose up`:**
+>
+> ```bash
+> # macOS / Linux
+> touch cloud_sniper.log
+> ```
+>
+> ```powershell
+> # Windows (PowerShell)
+> New-Item cloud_sniper.log -ItemType File
+> ```
 
 | Command | What it does |
 |---|---|
