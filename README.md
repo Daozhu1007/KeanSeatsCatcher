@@ -125,51 +125,46 @@ python cloud_cli.py --sections 12345,67890 --interval 15 --waitlist \
     --webhook https://discord.com/api/webhooks/xxx/yyy
 ```
 
-### Docker Deployment — 24/7 Cloud Auto-Catch Engine
+### Docker Deployment — Universal Cloud Phantom Guide
 
-> **The ultimate setup.** Docker turns KSC into an autonomous seat-sniping daemon that runs 24/7 — even when your Mac lid is closed, your terminal is dead, or your NAS is the only thing breathing in the room.
+> Docker turns KSC into a 24/7 autonomous seat-sniping daemon. Run it on a $5 VPS, a NAS in the closet, or Docker Desktop on the same Mac. Close your lid, kill your terminal, walk away — it keeps hunting.
 
-The strategy is **"extract locally, run remotely"** — SSO login happens once on your physical machine. The exported session is mounted into the container. No browser. No display. No bloat.
+No browser. No display. No bloat. **Image size:** ~130 MB (`python:3.10-slim` + `requests`).
 
-**Image size:** ~130 MB — `python:3.10-slim` + `requests`. PyQt6, winotify, and selenium are deliberately excluded.
+#### Phase 1: Extract the Session Locally
 
-#### Step 1: Export session on your local machine
-
-Run this **once** on any machine with a display (Windows, macOS, Linux):
+**This step always happens on a machine with a display.** SSO demands a browser; the container has none. Run this on your daily-driver laptop or desktop — Windows, macOS, or Linux:
 
 ```bash
 python export_session.py
 # → session.json
 ```
 
-Complete the SSO login in the browser window. `session.json` holds your encrypted cookies and token.
+Log in via the browser window. `session.json` captures your encrypted cookies and API token.
 
-> **Smart Browser Fallback.** `export_session.py` ships with an automatic browser fallback chain — it tries **Edge → Chrome → Safari** (macOS: **Safari → Chrome → Edge**) in order. The first available browser wins. Mac users: there is zero need to install Edge or Chrome; the script picks up Safari out of the box.
+> **Smart Browser Fallback.** `export_session.py` ships with an automatic fallback chain — **Edge → Chrome → Safari** (macOS: **Safari → Chrome → Edge**). The first available browser wins. No need to install anything.
 
-#### Step 2: Prepare the server directory
+#### Phase 2: Configure the Arsenal
+
+Clone the repo on your target machine and copy in `session.json`:
 
 ```bash
-# On server / NAS:
 git clone https://github.com/Daozhu1007/KeanSeatsCatcher.git
 cd KeanSeatsCatcher
-
-# Copy session.json from your local machine:
 # scp session.json user@your-server:/opt/ksc/KeanSeatsCatcher/
 ```
 
-You should end up with:
+You should have:
 
 ```
 KeanSeatsCatcher/
-├── session.json            # your exported credentials (you add this)
+├── session.json            # your exported credentials
 ├── docker-compose.yml      # container orchestration
 ├── Dockerfile              # image definition
 └── ... (other source files)
 ```
 
-#### Step 3: Configure your arsenal
-
-Edit `docker-compose.yml` on the server. Below is the full annotated reference — pick the weapons you need:
+Edit `docker-compose.yml` — replace the placeholder IDs and pick your scenario:
 
 ```yaml
 services:
@@ -179,83 +174,62 @@ services:
     restart: unless-stopped
     volumes:
       - ./session.json:/app/session.json:ro
-      - ./cloud_sniper.log:/app/cloud_sniper.log
 
     command:
-      # ═══════════════════════════════════════════════════
-      # Required — always set these
-      # ═══════════════════════════════════════════════════
-      - "--sections"
-      - "26012,26686"               # ← your target section IDs
-      - "--interval"
-      - "15"                        # polling interval in seconds
-      - "--load-session"
-      - "session.json"              # exported session from Step 1
+      # --- Required ---
+      - --sections
+      - 26012,26686                 # ← your target section IDs
+      - --interval
+      - 15                          # polling interval in seconds
+      - --load-session
+      - session.json                # exported session from Phase 1
 
-      # ═══════════════════════════════════════════════════
-      # Weapon 1: Standard Auto-Catch
-      # ═══════════════════════════════════════════════════
-      # The above 3 flags are all you need. KSC polls every
-      # N seconds. The instant a seat opens, it fires an
-      # Add request — no human in the loop.
+      # --- Weapon 1: Standard Auto-Catch ---
+      # The flags above are all you need. KSC polls every N seconds
+      # and fires an Add request the instant a seat opens.
 
-      # ═══════════════════════════════════════════════════
-      # Weapon 2: Drop-and-Add (credit-cap swap)
-      # ═══════════════════════════════════════════════════
-      # Uncomment when you're at the credit limit and must
-      # sacrifice an enrolled course to make room:
-      # - "--drop-section"
-      # - "26667"                     # course to drop (the sacrifice)
+      # --- Weapon 2: Drop-and-Add (credit-cap swap) ---
+      # Uncomment when you're at the credit limit:
+      # - --drop-section
+      # - 26667                      # course to sacrifice
 
-      # ═══════════════════════════════════════════════════
-      # Weapon 3: Waitlist Fallback
-      # ═══════════════════════════════════════════════════
-      # - "--waitlist"                # fallback if Add is rejected
+      # --- Weapon 3: Waitlist Fallback ---
+      # - --waitlist
 
-      # ═══════════════════════════════════════════════════
-      # Weapon 4: Webhook Notification
-      # ═══════════════════════════════════════════════════
-      # POSTs a JSON payload on every successful action.
-      # Discord / Slack / ntfy — anything with a webhook URL:
-      # - "--webhook"
-      # - "https://discord.com/api/webhooks/xxx/yyy"
+      # --- Weapon 4: Webhook Notification ---
+      # Discord / Slack / ntfy:
+      # - --webhook
+      # - https://discord.com/api/webhooks/xxx/yyy
 ```
 
-| Weapon | Flags | Behavior |
-|---|---|---|
-| **Standard Auto-Catch** | `--sections` `--load-session` | Polls target sections. Detects open seat → fires `Add` request instantly. |
-| **Drop-and-Add** | `--drop-section <ID>` | Drops the old section and adds the new one in a **single atomic API call**. No gap. No risk of losing both. |
-| **Waitlist Fallback** | `--waitlist` | If `Add` is rejected (e.g. section full again), falls back to a `Waitlist` action automatically. |
-| **Webhook Alert** | `--webhook <URL>` | Sends `{"title":"KSC Auto-Catch","message":"..."}` on every successful registration. |
+**Scenario A — Standard Auto-Catch (room under credit cap)**
 
-**Anti-spam guard:** A webhook fires only on a **new** "full → open" transition. If a section stays open across multiple rounds, you won't be bombarded with duplicate notifications.
+Keep `--sections` and `--load-session` active. KSC polls every N seconds. The moment a seat flips from full to open, it fires an `Add` request. No other flags required.
 
-#### Step 4: Manage the container
+**Scenario B — Drop-and-Add (at the credit cap)**
+
+Uncomment `--drop-section` and supply the ID of an enrolled course you're willing to sacrifice. When a target opens, KSC drops the old section and adds the new one in a **single atomic API call** — no gap, no risk of losing both.
+
+| Optional Flag | Effect |
+|---|---|
+| `--waitlist` | Fallback to `Waitlist` if `Add` is rejected |
+| `--webhook <URL>` | POSTs `{"title":"KSC Auto-Catch","message":"..."}` on every successful action |
+| `--drop-section <ID>` | Synchronous swap: drop old, add new in one call |
+
+**Anti-spam guard:** Webhooks fire only on a **new** "full → open" transition. No duplicate spam across rounds.
+
+#### Phase 3: Launch & Monitor
 
 ```bash
 cd KeanSeatsCatcher
 ```
 
-> ⚠️ **CRITICAL: Prevent Volume Mount Trap.** The compose file bind-mounts `./cloud_sniper.log:/app/cloud_sniper.log`. If `cloud_sniper.log` does **not** exist on the host at first launch, Docker silently creates it as a **directory** instead of a file. Python's `logging` module then hits `IsADirectoryError: [Errno 21]`, and the container loops into a crash-restart death spiral.
->
-> **Create the file before the first `docker compose up`:**
->
-> ```bash
-> # macOS / Linux
-> touch cloud_sniper.log
-> ```
->
-> ```powershell
-> # Windows (PowerShell)
-> New-Item cloud_sniper.log -ItemType File
-> ```
-
 | Command | What it does |
 |---|---|
-| `docker compose up -d` | Builds image, starts container in background. First run takes ~30 s. Container auto-restarts on crash or host reboot (`restart: unless-stopped`). |
-| `docker compose logs -f` | Tails live output. Look for `Polling (Round #N)` — this confirms KSC is alive and hunting. A successful catch prints a huge banner in the logs. |
-| `docker compose up -d --build` | Force-rebuilds image then restarts. Use after editing `docker-compose.yml`, replacing `session.json`, or `git pull` on new code. |
-| `docker compose down` | Stops and removes the container gracefully. Logs remain on disk at `./cloud_sniper.log`. |
+| `docker compose up -d` | Builds image, starts daemon in background (~30 s first run). Auto-restarts on crash or host reboot. |
+| `docker compose logs -f` | Tails live output. `Polling (Round #N)` = alive and hunting. A successful catch prints a banner. |
+| `docker compose down` | Graceful shutdown. |
+| `docker compose up -d --build` | Force-rebuild image before starting. Use after editing `docker-compose.yml`, replacing `session.json`, or pulling new code. |
 
 ---
 
