@@ -125,11 +125,13 @@ python cloud_cli.py --sections 12345,67890 --interval 15 --waitlist \
     --webhook https://discord.com/api/webhooks/xxx/yyy
 ```
 
-### Docker Deployment (Recommended for Mac / NAS / Linux)
+### Docker Deployment — 24/7 Cloud Auto-Catch Engine
 
-The Cloud Phantom runs perfectly inside a container. The strategy is **"extract locally, run remotely"** — you perform SSO login on your physical machine, export the session, and mount it into the container. No browser or display is needed inside Docker.
+> **The ultimate setup.** Docker turns KSC into an autonomous seat-sniping daemon that runs 24/7 — even when your Mac lid is closed, your terminal is dead, or your NAS is the only thing breathing in the room.
 
-**Image size:** ~130 MB — minimal `python:3.10-slim` base with only `requests`. PyQt6, winotify, and selenium are deliberately excluded.
+The strategy is **"extract locally, run remotely"** — SSO login happens once on your physical machine. The exported session is mounted into the container. No browser. No display. No bloat.
+
+**Image size:** ~130 MB — `python:3.10-slim` + `requests`. PyQt6, winotify, and selenium are deliberately excluded.
 
 #### Step 1: Export session on your local machine
 
@@ -140,14 +142,12 @@ python export_session.py
 # → session.json
 ```
 
-Complete the SSO login in the browser window. The file `session.json` contains your encrypted session cookies and token.
+Complete the SSO login in the browser window. `session.json` holds your encrypted cookies and token.
 
 #### Step 2: Prepare the server directory
 
-Clone the repo on your server / NAS, then copy in your session:
-
 ```bash
-# On server:
+# On server / NAS:
 git clone https://github.com/Daozhu1007/KeanSeatsCatcher.git
 cd KeanSeatsCatcher
 
@@ -165,38 +165,81 @@ KeanSeatsCatcher/
 └── ... (other source files)
 ```
 
-> The image is built locally on first run. No PyQt6 or winotify is pulled — only `requests`.
+#### Step 3: Configure your arsenal
 
-#### Step 3: Edit course IDs and start
-
-Edit `docker-compose.yml` on the server — replace the placeholder section IDs with your real targets:
+Edit `docker-compose.yml` on the server. Below is the full annotated reference — pick the weapons you need:
 
 ```yaml
-command:
-  - "--sections"
-  - "26012,26686"           # ← your target section IDs
-  - "--interval"
-  - "15"
-  - "--load-session"
-  - "session.json"
-  # Optional: uncomment and set as needed
-  # - "--waitlist"
-  # - "--drop-section"
-  # - "26667"
-  # - "--webhook"
-  # - "https://discord.com/api/webhooks/xxx/yyy"
+services:
+  ksc:
+    build: .
+    container_name: ksc-auto-catch
+    restart: unless-stopped
+    volumes:
+      - ./session.json:/app/session.json:ro
+      - ./cloud_sniper.log:/app/cloud_sniper.log
+
+    command:
+      # ═══════════════════════════════════════════════════
+      # Required — always set these
+      # ═══════════════════════════════════════════════════
+      - "--sections"
+      - "26012,26686"               # ← your target section IDs
+      - "--interval"
+      - "15"                        # polling interval in seconds
+      - "--load-session"
+      - "session.json"              # exported session from Step 1
+
+      # ═══════════════════════════════════════════════════
+      # Weapon 1: Standard Auto-Catch
+      # ═══════════════════════════════════════════════════
+      # The above 3 flags are all you need. KSC polls every
+      # N seconds. The instant a seat opens, it fires an
+      # Add request — no human in the loop.
+
+      # ═══════════════════════════════════════════════════
+      # Weapon 2: Drop-and-Add (credit-cap swap)
+      # ═══════════════════════════════════════════════════
+      # Uncomment when you're at the credit limit and must
+      # sacrifice an enrolled course to make room:
+      # - "--drop-section"
+      # - "26667"                     # course to drop (the sacrifice)
+
+      # ═══════════════════════════════════════════════════
+      # Weapon 3: Waitlist Fallback
+      # ═══════════════════════════════════════════════════
+      # - "--waitlist"                # fallback if Add is rejected
+
+      # ═══════════════════════════════════════════════════
+      # Weapon 4: Webhook Notification
+      # ═══════════════════════════════════════════════════
+      # POSTs a JSON payload on every successful action.
+      # Discord / Slack / ntfy — anything with a webhook URL:
+      # - "--webhook"
+      # - "https://discord.com/api/webhooks/xxx/yyy"
 ```
 
-Then bring it up:
+| Weapon | Flags | Behavior |
+|---|---|---|
+| **Standard Auto-Catch** | `--sections` `--load-session` | Polls target sections. Detects open seat → fires `Add` request instantly. |
+| **Drop-and-Add** | `--drop-section <ID>` | Drops the old section and adds the new one in a **single atomic API call**. No gap. No risk of losing both. |
+| **Waitlist Fallback** | `--waitlist` | If `Add` is rejected (e.g. section full again), falls back to a `Waitlist` action automatically. |
+| **Webhook Alert** | `--webhook <URL>` | Sends `{"title":"KSC Auto-Catch","message":"..."}` on every successful registration. |
+
+**Anti-spam guard:** A webhook fires only on a **new** "full → open" transition. If a section stays open across multiple rounds, you won't be bombarded with duplicate notifications.
+
+#### Step 4: Manage the container
 
 ```bash
 cd KeanSeatsCatcher
-docker compose up -d          # builds image + starts in background
-docker compose logs -f         # follow logs
-docker compose down            # stop gracefully
 ```
 
-The container restarts automatically on crash or host reboot (`restart: unless-stopped`).
+| Command | What it does |
+|---|---|
+| `docker compose up -d` | Builds image, starts container in background. First run takes ~30 s. Container auto-restarts on crash or host reboot (`restart: unless-stopped`). |
+| `docker compose logs -f` | Tails live output. Look for `Polling (Round #N)` — this confirms KSC is alive and hunting. A successful catch prints a huge banner in the logs. |
+| `docker compose up -d --build` | Force-rebuilds image then restarts. Use after editing `docker-compose.yml`, replacing `session.json`, or `git pull` on new code. |
+| `docker compose down` | Stops and removes the container gracefully. Logs remain on disk at `./cloud_sniper.log`. |
 
 ---
 
