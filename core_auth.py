@@ -1,5 +1,6 @@
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from selenium import webdriver
 from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.webdriver.chrome.options import Options as ChromeOptions
@@ -18,21 +19,27 @@ class KeanAuthManager:
         self.login_url = "https://kean-ss.colleague.elluciancloud.com/Student/Planning/DegreePlans"
 
     def launch_browser(self, headless: bool = False):
+        """
+        Try Edge → Chrome → Safari (macOS only) in order.
+        Each attempt is guarded by a 15-second timeout — if a browser
+        hangs (e.g. driver download stalls on a slow connection), we
+        fall through to the next candidate instead of freezing forever.
+        """
         last_error = None
 
         # --- Chain 1: Microsoft Edge ---
         try:
-            self._try_edge(headless)
+            self._try_browser_with_timeout("Edge", lambda: self._try_edge(headless))
             return
-        except WebDriverException as e:
+        except (WebDriverException, TimeoutError) as e:
             print(f"Edge unavailable: {e}")
             last_error = e
 
         # --- Chain 2: Google Chrome ---
         try:
-            self._try_chrome(headless)
+            self._try_browser_with_timeout("Chrome", lambda: self._try_chrome(headless))
             return
-        except WebDriverException as e:
+        except (WebDriverException, TimeoutError) as e:
             print(f"Chrome unavailable: {e}")
             last_error = e
 
@@ -41,12 +48,9 @@ class KeanAuthManager:
             print("Safari does not support headless mode, skipping.")
         else:
             try:
-                print("Trying Safari browser...")
-                self.driver = webdriver.Safari()
-                self.driver.get(self.login_url)
-                print("[INFO] Safari browser launched successfully.")
+                self._try_browser_with_timeout("Safari", lambda: self._try_safari())
                 return
-            except WebDriverException as e:
+            except (WebDriverException, TimeoutError) as e:
                 print(f"Safari unavailable: {e}")
                 last_error = e
 
@@ -56,7 +60,6 @@ class KeanAuthManager:
         )
 
     def _try_edge(self, headless: bool):
-        print(f"Trying Edge browser (headless={headless})...")
         options = EdgeOptions()
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -75,7 +78,6 @@ class KeanAuthManager:
         print("[INFO] Edge browser launched successfully.")
 
     def _try_chrome(self, headless: bool):
-        print(f"Trying Chrome browser (headless={headless})...")
         options = ChromeOptions()
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
@@ -91,6 +93,26 @@ class KeanAuthManager:
         })
         self.driver.get(self.login_url)
         print("[INFO] Chrome browser launched successfully.")
+
+    def _try_safari(self):
+        self.driver = webdriver.Safari()
+        self.driver.get(self.login_url)
+        print("[INFO] Safari browser launched successfully.")
+
+    def _try_browser_with_timeout(self, name, fn, timeout=15):
+        """
+        Run a browser launch function inside a thread with a timeout.
+        If the thread does not complete within *timeout* seconds,
+        raises TimeoutError so the caller can fall through to the
+        next browser candidate.
+        """
+        print(f"Trying {name} browser (timeout={timeout}s)...")
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(fn)
+            try:
+                future.result(timeout=timeout)
+            except FutureTimeoutError:
+                raise TimeoutError(f"{name} launch timed out after {timeout}s")
 
     def extract_credentials(self) -> dict:
         if not self.driver:
