@@ -106,6 +106,8 @@
     "tab_autocatch": "Auto-Catch",
     "autocatch_title": "Auto-Catch Monitor",
     "placeholder_interval_autocatch": "e.g.: 15",
+    "lbl_drop_section_id": "Drop Section ID (Optional):",
+    "placeholder_drop_section_id": "e.g.: 21421 (drop synchronously when adding)",
     "btn_start_monitoring": "Start Monitoring",
     "autocatch_status_idle": "Idle",
     "autocatch_status_polling": "Polling (Round #{0}) | Recoveries: {1}...",

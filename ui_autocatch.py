@@ -39,6 +39,13 @@ class AutoCatchInterface(QWidget):
         input_row1.addWidget(self.section_input, 1)
         card_layout.addLayout(input_row1)
 
+        drop_row = QHBoxLayout()
+        drop_row.addWidget(BodyLabel(i18n.tr("lbl_drop_section_id")))
+        self.drop_section_input = LineEdit()
+        self.drop_section_input.setPlaceholderText(i18n.tr("placeholder_drop_section_id"))
+        drop_row.addWidget(self.drop_section_input, 1)
+        card_layout.addLayout(drop_row)
+
         input_row2 = QHBoxLayout()
         input_row2.addWidget(BodyLabel(i18n.tr("lbl_interval")))
         self.interval_input = LineEdit()
@@ -156,15 +163,18 @@ class AutoCatchInterface(QWidget):
         self.section_input.setEnabled(False)
         self.interval_input.setEnabled(False)
         self.waitlist_switch.setEnabled(False)
+        self.drop_section_input.setEnabled(False)
 
         if self.sibling:
             self.sibling.lock_start()
 
         waitlist_enabled = self.waitlist_switch.isChecked()
+        drop_section_id = self.drop_section_input.text().strip()
         self.worker = AutoCatchWorker(
             self.api_engine, section_list, interval_time,
             enable_waitlist=waitlist_enabled,
-            auth_manager=self.auth_manager)
+            auth_manager=self.auth_manager,
+            drop_section_id=drop_section_id)
         self.worker.log_signal.connect(self.log)
         self.worker.status_signal.connect(self.on_status)
         self.worker.seat_found_signal.connect(self.on_seat_found)
@@ -189,6 +199,7 @@ class AutoCatchInterface(QWidget):
             self.section_input.setEnabled(True)
             self.interval_input.setEnabled(True)
             self.waitlist_switch.setEnabled(True)
+            self.drop_section_input.setEnabled(True)
             self.status_label.setText(i18n.tr("autocatch_status_idle"))
             if self.sibling:
                 self.sibling.unlock_start()

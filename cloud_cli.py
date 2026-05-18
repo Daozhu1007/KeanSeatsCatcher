@@ -13,7 +13,6 @@ import logging
 import signal
 import sys
 
-from core_auth import KeanAuthManager
 from core_api import KeanApiClient
 from cloud_worker import CloudWorker
 
@@ -61,6 +60,9 @@ def parse_args():
     parser.add_argument(
         '--webhook', metavar='URL',
         help='Webhook URL for push notification on successful registration')
+    parser.add_argument(
+        '--drop-section', type=str, default=None,
+        help='Section ID to drop synchronously when adding the new course')
     return parser.parse_args()
 
 
@@ -115,6 +117,8 @@ def authenticate(logger, headless: bool, session_file: str = None):
             verification_token=creds["verification_token"],
             student_id=creds["student_id"])
         return engine, None
+
+    from core_auth import KeanAuthManager  # lazy import — requires selenium
 
     auth = KeanAuthManager()
 
@@ -173,6 +177,8 @@ def main():
         logger.info("Mode     : %s", "Headless" if headless else "Visible Browser")
     if args.webhook:
         logger.info("Webhook  : %s", args.webhook)
+    if args.drop_section:
+        logger.info("Drop Sec : %s", args.drop_section)
     logger.info("=" * 56)
 
     engine, auth = authenticate(logger, headless, session_file=args.load_session)
@@ -187,6 +193,7 @@ def main():
         enable_waitlist=args.waitlist,
         auth_manager=auth,
         webhook_url=args.webhook,
+        drop_section_id=args.drop_section or "",
     )
 
     # Graceful shutdown on Ctrl+C

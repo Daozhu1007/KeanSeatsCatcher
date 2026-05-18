@@ -22,7 +22,7 @@ class CloudWorker(threading.Thread):
 
     def __init__(self, api_engine, section_ids, interval,
                  enable_waitlist=False, auth_manager=None,
-                 webhook_url=None):
+                 webhook_url=None, drop_section_id: str = ""):
         super().__init__(daemon=True)
         self.api_engine = api_engine
         self.section_ids = section_ids
@@ -30,6 +30,7 @@ class CloudWorker(threading.Thread):
         self.enable_waitlist = enable_waitlist
         self.auth_manager = auth_manager
         self.webhook_url = webhook_url
+        self.drop_section_id = drop_section_id
         self.is_running = True
         self.recovery_count = 0
         self._stop_event = threading.Event()
@@ -130,7 +131,8 @@ class CloudWorker(threading.Thread):
                 try:
                     success, msg = self.api_engine.execute_full_attack(
                         self.section_ids,
-                        enable_waitlist=self.enable_waitlist)
+                        enable_waitlist=self.enable_waitlist,
+                        drop_section_id=self.drop_section_id or None)
                 except SessionExpiredError:
                     logger.warning(
                         "Session expired during attack. Initiating recovery...")

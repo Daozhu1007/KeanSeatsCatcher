@@ -19,13 +19,14 @@ class AutoCatchWorker(QThread):
     session_recovered_signal = pyqtSignal(bool)
 
     def __init__(self, api_engine, section_ids, interval, enable_waitlist=False,
-                 auth_manager=None):
+                 auth_manager=None, drop_section_id: str = ""):
         super().__init__()
         self.api_engine = api_engine
         self.section_ids = section_ids
         self.interval = interval
         self.enable_waitlist = enable_waitlist
         self.auth_manager = auth_manager
+        self.drop_section_id = drop_section_id
         self.is_running = True
         self.recovery_count = 0
         self._stop_event = threading.Event()
@@ -110,7 +111,8 @@ class AutoCatchWorker(QThread):
                 try:
                     success, msg = self.api_engine.execute_full_attack(
                         self.section_ids,
-                        enable_waitlist=self.enable_waitlist)
+                        enable_waitlist=self.enable_waitlist,
+                        drop_section_id=self.drop_section_id or None)
                 except SessionExpiredError:
                     self.log_signal.emit(
                         "[WARNING] Session expired during attack. Initiating automatic re-authentication...",

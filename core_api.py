@@ -154,10 +154,22 @@ class KeanApiClient:
                     errors.append(msg)
         return False, errors
 
-    def register_multiple_sections(self, section_ids: List[str], action: str = "Add") -> Tuple[bool, Any]:
+    def register_multiple_sections(self, section_ids: List[str], action: str = "Add",
+                                     drop_section_id: str = None) -> Tuple[bool, Any]:
         url = f"{self.base_url}/RegisterSections"
-        registrations = [{"SectionId": str(sec_id), "Credits": 3, "Action": action, "DropReasonCode": None,
-                          "IntentToWithdrawId": None} for sec_id in section_ids]
+        registrations = []
+        if drop_section_id:
+            registrations.append({
+                "SectionId": str(drop_section_id),
+                "Credits": None,
+                "Action": "Drop",
+                "DropReasonCode": None,
+                "IntentToWithdrawId": None
+            })
+        registrations.extend([
+            {"SectionId": str(sec_id), "Credits": 3, "Action": action, "DropReasonCode": None,
+             "IntentToWithdrawId": None} for sec_id in section_ids
+        ])
         payload = {"sectionRegistrations": registrations, "studentId": str(self.student_id)}
 
         try:
@@ -243,8 +255,10 @@ class KeanApiClient:
             self._log(i18n.tr("log_confirm_error", e), "error")
             return False
 
-    def execute_full_attack(self, section_ids: List[str], enable_waitlist: bool = False) -> Tuple[bool, str]:
-        success, result_data = self.register_multiple_sections(section_ids)
+    def execute_full_attack(self, section_ids: List[str], enable_waitlist: bool = False,
+                              drop_section_id: str = None) -> Tuple[bool, str]:
+        success, result_data = self.register_multiple_sections(
+            section_ids, drop_section_id=drop_section_id)
 
         if success:
             confirm_success = self.complete_registration()
@@ -256,7 +270,8 @@ class KeanApiClient:
         # Fallback: if waitlist is enabled and the failure is not a timeout, try waitlist
         if enable_waitlist and not self._is_timeout_error(result_data):
             self._log(i18n.tr("log_waitlist_attempt"))
-            success, result_data = self.register_multiple_sections(section_ids, action=WAITLIST_ACTION)
+            success, result_data = self.register_multiple_sections(section_ids, action=WAITLIST_ACTION,
+                                                                      drop_section_id=drop_section_id)
 
             if success:
                 confirm_success = self.complete_registration()
