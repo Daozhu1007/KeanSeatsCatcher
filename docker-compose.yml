@@ -4,22 +4,30 @@ services:
     container_name: ksc-auto-catch
     restart: unless-stopped
     volumes:
-      # Mount session.json exported from your local machine (read-only)
       - ./session.json:/app/session.json:ro
-      # Persist logs to host for inspection
-      - ./cloud_sniper.log:/app/cloud_sniper.log
 
-    # --- Edit these arguments for your target course(s) ---
     command:
-      - "--sections"
-      - "12345,67890"               # TODO: replace with your target section IDs
-      - "--interval"
-      - "15"
-      - "--load-session"
-      - "session.json"
-      # Optional features — uncomment as needed:
-      # - "--waitlist"
-      # - "--drop-section"
-      # - "26667"                     # old course to drop synchronously
-      # - "--webhook"
-      # - "https://discord.com/api/webhooks/xxx/yyy"
+      # --- Required ---
+      - --sections
+      - 12345,67890                 # ← your target section IDs
+      - --interval
+      - 15                          # polling interval in seconds
+      - --load-session
+      - session.json                # exported session from Phase 1
+
+      # --- Weapon 1: Standard Auto-Catch ---
+      # The flags above are all you need. KSC polls every N seconds
+      # and fires an Add request the instant a seat opens.
+
+      # --- Weapon 2: Drop-and-Add (credit-cap swap) ---
+      # Uncomment when you're at the credit limit:
+      # - --drop-section
+      # - 26667                      # course to sacrifice
+
+      # --- Weapon 3: Waitlist Fallback ---
+      # - --waitlist
+
+      # --- Weapon 4: Webhook Notification ---
+      # Discord / Slack / ntfy:
+      # - --webhook
+      # - https://discord.com/api/webhooks/xxx/yyy
