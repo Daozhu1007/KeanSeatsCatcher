@@ -106,6 +106,8 @@
     "tab_autocatch": "自动捡漏",
     "autocatch_title": "自动捡漏监控",
     "placeholder_interval_autocatch": "如: 15",
+    "lbl_drop_section_id": "退课 ID (选填, 学分满时用于同步替换):",
+    "placeholder_drop_section_id": "例如: 21421 (选新课的同时退掉该课)",
     "btn_start_monitoring": "开始监控",
     "autocatch_status_idle": "空闲",
     "autocatch_status_polling": "轮询中 (第{0}轮) | 断线重连: {1}次...",

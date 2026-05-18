@@ -125,6 +125,79 @@ python cloud_cli.py --sections 12345,67890 --interval 15 --waitlist \
     --webhook https://discord.com/api/webhooks/xxx/yyy
 ```
 
+### Docker Deployment (Recommended for Mac / NAS / Linux)
+
+The Cloud Phantom runs perfectly inside a container. The strategy is **"extract locally, run remotely"** — you perform SSO login on your physical machine, export the session, and mount it into the container. No browser or display is needed inside Docker.
+
+**Image size:** ~130 MB — minimal `python:3.10-slim` base with only `requests`. PyQt6, winotify, and selenium are deliberately excluded.
+
+#### Step 1: Export session on your local machine
+
+Run this **once** on any machine with a display (Windows, macOS, Linux):
+
+```bash
+python export_session.py
+# → session.json
+```
+
+Complete the SSO login in the browser window. The file `session.json` contains your encrypted session cookies and token.
+
+#### Step 2: Prepare the server directory
+
+Clone the repo on your server / NAS, then copy in your session:
+
+```bash
+# On server:
+git clone https://github.com/Daozhu1007/KeanSeatsCatcher.git
+cd KeanSeatsCatcher
+
+# Copy session.json from your local machine:
+# scp session.json user@your-server:/opt/ksc/KeanSeatsCatcher/
+```
+
+You should end up with:
+
+```
+KeanSeatsCatcher/
+├── session.json            # your exported credentials (you add this)
+├── docker-compose.yml      # container orchestration
+├── Dockerfile              # image definition
+└── ... (other source files)
+```
+
+> The image is built locally on first run. No PyQt6 or winotify is pulled — only `requests`.
+
+#### Step 3: Edit course IDs and start
+
+Edit `docker-compose.yml` on the server — replace the placeholder section IDs with your real targets:
+
+```yaml
+command:
+  - "--sections"
+  - "26012,26686"           # ← your target section IDs
+  - "--interval"
+  - "15"
+  - "--load-session"
+  - "session.json"
+  # Optional: uncomment and set as needed
+  # - "--waitlist"
+  # - "--drop-section"
+  # - "26667"
+  # - "--webhook"
+  # - "https://discord.com/api/webhooks/xxx/yyy"
+```
+
+Then bring it up:
+
+```bash
+cd KeanSeatsCatcher
+docker compose up -d          # builds image + starts in background
+docker compose logs -f         # follow logs
+docker compose down            # stop gracefully
+```
+
+The container restarts automatically on crash or host reboot (`restart: unless-stopped`).
+
 ---
 
 ## Project Structure
@@ -144,8 +217,13 @@ KeanSeatsCatcher/
 ├── cloud_worker.py         # Headless polling worker (threading.Thread)
 ├── export_session.py       # Session exporter (Windows → Linux)
 │
+├── Dockerfile              # Container image definition
+├── docker-compose.yml      # One-command container orchestration
+├── .dockerignore           # Exclude desktop cruft from build context
+├── requirements.txt        # Desktop dependencies (PyQt6, selenium, etc.)
+├── requirements-cli.txt    # CLI-only dependencies (requests only)
+│
 ├── KeanSeatsCatcher.spec   # PyInstaller spec
-├── requirements.txt
 └── KeanSeatsCatcher.iss    # Inno Setup installer script
 ```
 
