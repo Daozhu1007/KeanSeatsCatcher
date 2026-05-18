@@ -1,7 +1,8 @@
 import json
 import time
 from selenium import webdriver
-from selenium.webdriver.edge.options import Options
+from selenium.webdriver.edge.options import Options as EdgeOptions
+from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
@@ -17,34 +18,79 @@ class KeanAuthManager:
         self.login_url = "https://kean-ss.colleague.elluciancloud.com/Student/Planning/DegreePlans"
 
     def launch_browser(self, headless: bool = False):
-        print(f"Initializing Edge browser (headless={headless})...")
+        last_error = None
+
+        # --- Chain 1: Microsoft Edge ---
         try:
-            options = Options()
-            options.add_argument('--disable-blink-features=AutomationControlled')
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            options.add_experimental_option('useAutomationExtension', False)
-            options.add_experimental_option("detach", True)
+            self._try_edge(headless)
+            return
+        except WebDriverException as e:
+            print(f"Edge unavailable: {e}")
+            last_error = e
 
-            if headless:
-                options.add_argument('--headless')
-                options.add_argument('--disable-gpu')
-                options.add_argument('--window-size=1920,1080')
+        # --- Chain 2: Google Chrome ---
+        try:
+            self._try_chrome(headless)
+            return
+        except WebDriverException as e:
+            print(f"Chrome unavailable: {e}")
+            last_error = e
 
-            self.driver = webdriver.Edge(options=options)
+        # --- Chain 3: Safari (macOS only, no headless) ---
+        if headless:
+            print("Safari does not support headless mode, skipping.")
+        else:
+            try:
+                print("Trying Safari browser...")
+                self.driver = webdriver.Safari()
+                self.driver.get(self.login_url)
+                print("[INFO] Safari browser launched successfully.")
+                return
+            except WebDriverException as e:
+                print(f"Safari unavailable: {e}")
+                last_error = e
 
-            self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-                'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined});'
-            })
+        raise RuntimeError(
+            "No supported browser found. Please install Chrome or Edge.\n"
+            f"Last error: {last_error}"
+        )
 
-            self.driver.get(self.login_url)
-            if headless:
-                print("Headless browser launched. Proceeding with automated login...")
-            else:
-                print("Browser launched. Please complete SSO login manually...")
+    def _try_edge(self, headless: bool):
+        print(f"Trying Edge browser (headless={headless})...")
+        options = EdgeOptions()
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+        options.add_experimental_option("detach", True)
+        if headless:
+            options.add_argument('--headless')
+            options.add_argument('--disable-gpu')
+            options.add_argument('--window-size=1920,1080')
 
-        except Exception as e:
-            print(f"Browser launch failed: {str(e)}")
-            raise e
+        self.driver = webdriver.Edge(options=options)
+        self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+            'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined});'
+        })
+        self.driver.get(self.login_url)
+        print("[INFO] Edge browser launched successfully.")
+
+    def _try_chrome(self, headless: bool):
+        print(f"Trying Chrome browser (headless={headless})...")
+        options = ChromeOptions()
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+        if headless:
+            options.add_argument('--headless=new')
+            options.add_argument('--disable-gpu')
+            options.add_argument('--window-size=1920,1080')
+
+        self.driver = webdriver.Chrome(options=options)
+        self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+            'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined});'
+        })
+        self.driver.get(self.login_url)
+        print("[INFO] Chrome browser launched successfully.")
 
     def extract_credentials(self) -> dict:
         if not self.driver:
