@@ -1,5 +1,6 @@
 {
     "Settings": {
-        "Language": "en_US"
+        "Language": "en_US",
+        "KeepBrowserOpen": false
     }
 }

@@ -18,7 +18,7 @@ class KeanAuthManager:
         self.driver = None
         self.login_url = "https://kean-ss.colleague.elluciancloud.com/Student/Planning/DegreePlans"
 
-    def launch_browser(self, headless: bool = False):
+    def launch_browser(self, headless: bool = False, detach: bool = False):
         """
         Per-browser 15-second timeout prevents a hung driver download
         from freezing the entire chain.
@@ -29,12 +29,21 @@ class KeanAuthManager:
         """
         last_error = None
 
-        chains = self._browser_chain(headless)
+        chains = self._browser_chain(headless, detach)
         for name, fn in chains:
+            # Guard: a previous browser's background thread may have
+            # finished after its timeout, setting self.driver.
+            if self.driver is not None:
+                print(f"[INFO] {name} browser launched successfully.")
+                return
             try:
                 self._try_browser_with_timeout(name, fn)
                 return
             except (WebDriverException, TimeoutError) as e:
+                # The thread may finish moments after the timeout fires.
+                if self.driver is not None:
+                    print(f"[INFO] {name} browser launched successfully.")
+                    return
                 print(f"{name} unavailable: {e}")
                 last_error = e
 
@@ -43,27 +52,29 @@ class KeanAuthManager:
             f"Last error: {last_error}"
         )
 
-    def _browser_chain(self, headless):
+    def _browser_chain(self, headless, detach):
         """Return the ordered list of (name, callable) to try."""
         import sys
         if sys.platform == "darwin" and not headless:
             # Safari uses built-in driver — no download, instant start
+            # Safari does not support the "detach" experimental option
             return [
                 ("Safari",  lambda: self._try_safari()),
-                ("Chrome",  lambda: self._try_chrome(headless)),
-                ("Edge",    lambda: self._try_edge(headless)),
+                ("Chrome",  lambda: self._try_chrome(headless, detach)),
+                ("Edge",    lambda: self._try_edge(headless, detach)),
             ]
         return [
-            ("Edge",    lambda: self._try_edge(headless)),
-            ("Chrome",  lambda: self._try_chrome(headless)),
+            ("Edge",    lambda: self._try_edge(headless, detach)),
+            ("Chrome",  lambda: self._try_chrome(headless, detach)),
         ]
 
-    def _try_edge(self, headless: bool):
+    def _try_edge(self, headless: bool, detach: bool = False):
         options = EdgeOptions()
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
-        options.add_experimental_option("detach", True)
+        if detach:
+            options.add_experimental_option("detach", True)
         if headless:
             options.add_argument('--headless')
             options.add_argument('--disable-gpu')
@@ -76,11 +87,13 @@ class KeanAuthManager:
         self.driver.get(self.login_url)
         print("[INFO] Edge browser launched successfully.")
 
-    def _try_chrome(self, headless: bool):
+    def _try_chrome(self, headless: bool, detach: bool = False):
         options = ChromeOptions()
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
+        if detach:
+            options.add_experimental_option("detach", True)
         if headless:
             options.add_argument('--headless=new')
             options.add_argument('--disable-gpu')

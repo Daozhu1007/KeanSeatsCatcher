@@ -1,9 +1,9 @@
 ; ─────────────────────────────────────────────────────────────
-; KeanSeatsCatcher v1.2 — Inno Setup Installer Script
+; KeanSeatsCatcher v1.3 — Inno Setup Installer Script
 ; ─────────────────────────────────────────────────────────────
 
 #define MyAppName       "KeanSeatsCatcher"
-#define MyAppVersion    "1.2"
+#define MyAppVersion    "1.3"
 #define MyAppPublisher  "Limitime"
 #define MyAppURL        "https://github.com/Daozhu1007/KeanSeatsCatcher"
 #define MyAppExeName    "KeanSeatsCatcher.exe"

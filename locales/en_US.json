@@ -1,6 +1,7 @@
 {
     "tab_monitor": "Dashboard",
     "tab_auth": "Authentication",
+    "tab_settings": "Settings",
     "tab_about": "About",
 
     "monitor_title": "Course Monitor",
@@ -100,6 +101,11 @@
     "lang_en": "English",
 
     "set_lang": "Language:",
+    "settings_title": "Settings",
+    "settings_keep_browser_open": "Keep Browser Open",
+    "settings_keep_browser_open_desc": "Do not close the browser automatically after successful authentication.",
+    "settings_language": "Language",
+    "settings_language_desc": "Select the application display language.",
     "msg_lang_changed": "Language Changed",
     "msg_lang_restart": "Please restart the application to apply the language setting.",
 

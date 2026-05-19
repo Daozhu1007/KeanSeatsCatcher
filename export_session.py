@@ -24,12 +24,15 @@ def main():
     parser.add_argument(
         '--output', default='session.json',
         help='Output file path (default: session.json)')
+    parser.add_argument(
+        '--keep-open', action='store_true',
+        help='Do not close the browser automatically after extracting the session')
     args = parser.parse_args()
 
     auth = KeanAuthManager()
 
     print("Launching browser for manual login...")
-    auth.launch_browser(headless=False)
+    auth.launch_browser(headless=False, detach=args.keep_open)
 
     input(">>> Complete SSO login in the browser, then press Enter to extract...")
 
@@ -53,10 +56,14 @@ def main():
     print(f"  Cookies    : {len(creds['cookies'])} entries")
     print(f"  Token      : {creds['verification_token'][:20]}...")
     print()
+    if args.keep_open:
+        print("[INFO] Browser detached. You can continue browsing manually.")
+        print()
     print("Copy this file to your cloud server and start with:")
     print(f"  python cloud_cli.py --sections 26012,26686 --load-session {args.output}")
 
-    auth.close_browser()
+    if not args.keep_open:
+        auth.close_browser()
 
 
 if __name__ == '__main__':

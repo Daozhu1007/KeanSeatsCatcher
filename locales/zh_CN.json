@@ -1,6 +1,7 @@
 {
     "tab_monitor": "仪表盘",
     "tab_auth": "授权管理",
+    "tab_settings": "设置",
     "tab_about": "关于",
 
     "monitor_title": "选课监控台",
@@ -100,6 +101,11 @@
     "lang_en": "English",
 
     "set_lang": "界面语言:",
+    "settings_title": "设置",
+    "settings_keep_browser_open": "保持浏览器开启",
+    "settings_keep_browser_open_desc": "认证成功后不自动关闭浏览器窗口。",
+    "settings_language": "界面语言",
+    "settings_language_desc": "选择应用程序界面显示语言。",
     "msg_lang_changed": "语言已切换",
     "msg_lang_restart": "请重启软件以使语言设置生效。",
 

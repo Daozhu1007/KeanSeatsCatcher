@@ -15,16 +15,17 @@ from PyQt6.QtGui import QPixmap, QIcon, QIntValidator, QDesktopServices
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel
 from qfluentwidgets import (FluentWindow, SubtitleLabel, BodyLabel, LineEdit,
-                            PushButton, TextEdit, CardWidget, ComboBox,
+                            PushButton, TextEdit, CardWidget,
                             SwitchButton,
                             Theme, setTheme, qconfig, NavigationItemPosition,
                             FluentIcon as FIF, InfoBar, InfoBarPosition,
                             ScrollArea)
 
-from i18n import i18n, save_config, load_config
+from i18n import i18n, load_config
 from core_auth import KeanAuthManager
 from core_api import KeanApiClient
 from ui_autocatch import AutoCatchInterface
+from ui_settings import SettingsInterface
 
 
 class BrandingWidget(QWidget):
@@ -193,13 +194,14 @@ class MonitorWorker(QThread):
 class BrowserLaunchWorker(QThread):
     finished_signal = pyqtSignal(bool, str)
 
-    def __init__(self, auth_manager):
+    def __init__(self, auth_manager, detach=False):
         super().__init__()
         self.auth_manager = auth_manager
+        self.detach = detach
 
     def run(self):
         try:
-            self.auth_manager.launch_browser()
+            self.auth_manager.launch_browser(detach=self.detach)
             self.finished_signal.emit(True, i18n.tr("msg_browser_launched"))
         except Exception as e:
             self.finished_signal.emit(False, str(e))
@@ -456,7 +458,9 @@ class AuthInterface(QWidget):
         self.btn_extract.setEnabled(False)
         InfoBar.info(i18n.tr("msg_launching_browser"), i18n.tr("msg_please_wait"), duration=3000, parent=self)
 
-        self.launch_worker = BrowserLaunchWorker(self.auth_manager)
+        config = load_config()
+        detach = config.get("Settings", {}).get("KeepBrowserOpen", False)
+        self.launch_worker = BrowserLaunchWorker(self.auth_manager, detach=detach)
         self.launch_worker.finished_signal.connect(self.on_browser_launched)
         self.launch_worker.start()
 
@@ -482,7 +486,9 @@ class AuthInterface(QWidget):
             student_id=student_id
         )
 
-        self.auth_manager.close_browser()
+        config = load_config()
+        if not config.get("Settings", {}).get("KeepBrowserOpen", False):
+            self.auth_manager.close_browser()
 
         self.btn_extract.setText(i18n.tr("msg_engine_ready", student_id))
         self.btn_extract.setEnabled(False)
@@ -530,7 +536,7 @@ class AboutInterface(ScrollArea):
         info_layout.setSpacing(5)
         name_lbl = SubtitleLabel("KeanSeatsCatcher")
         name_lbl.setStyleSheet("font-size: 22px; font-weight: bold;")
-        ver_lbl = BodyLabel("Version 1.2 Stable")
+        ver_lbl = BodyLabel("Version 1.3 Stable")
         ver_lbl.setStyleSheet("color: #a0a0a0;")
         info_layout.addWidget(name_lbl)
         info_layout.addWidget(ver_lbl)
@@ -553,26 +559,6 @@ class AboutInterface(ScrollArea):
         top_layout.addWidget(btn_github)
         top_layout.addWidget(btn_bilibili)
         self.layout.addWidget(top_card)
-
-        # Language selector
-        lang_card = CardWidget()
-        lang_layout = QHBoxLayout(lang_card)
-        lang_layout.setContentsMargins(20, 16, 20, 16)
-        lang_layout.setSpacing(15)
-
-        lang_label = BodyLabel(i18n.tr("set_lang"))
-        lang_label.setStyleSheet("font-size: 14px;")
-        self.lang_combo = ComboBox()
-        self.lang_combo.addItem(i18n.tr("lang_zh"), userData="zh_CN")
-        self.lang_combo.addItem(i18n.tr("lang_en"), userData="en_US")
-        current_lang = i18n.locale
-        self.lang_combo.setCurrentIndex(0 if current_lang == "zh_CN" else 1)
-        self.lang_combo.currentIndexChanged.connect(self._on_lang_changed)
-
-        lang_layout.addWidget(lang_label)
-        lang_layout.addWidget(self.lang_combo, 1)
-        lang_layout.addStretch(1)
-        self.layout.addWidget(lang_card)
 
         author_title = SubtitleLabel(i18n.tr("about_title"))
         author_title.setStyleSheet("font-size: 18px; font-weight: bold; margin-top: 10px;")
@@ -612,24 +598,6 @@ class AboutInterface(ScrollArea):
         self.layout.addLayout(warn_container)
         self.layout.addStretch(1)
 
-    def _on_lang_changed(self, index):
-        lang_code = self.lang_combo.itemData(index)
-        if not lang_code:
-            return
-        config = load_config()
-        if config.get("Settings", {}).get("Language") == lang_code:
-            return
-        config.setdefault("Settings", {})["Language"] = lang_code
-        save_config(config)
-        i18n.set_language(lang_code)
-        InfoBar.success(
-            i18n.tr("msg_lang_changed"),
-            i18n.tr("msg_lang_restart"),
-            duration=5000,
-            parent=self
-        )
-
-
 class KeanSeatsCatcherApp(FluentWindow):
     def __init__(self):
         super().__init__()
@@ -668,6 +636,7 @@ class KeanSeatsCatcherApp(FluentWindow):
         self.monitor_interface = MonitorInterface(self)
         self.autocatch_interface = AutoCatchInterface(self)
         self.auth_interface = AuthInterface(self)
+        self.settings_interface = SettingsInterface(self)
         self.about_interface = AboutInterface(self)
 
         self.auth_interface.engine_ready_signal.connect(self.monitor_interface.set_api_engine)
@@ -679,7 +648,8 @@ class KeanSeatsCatcherApp(FluentWindow):
 
         self.addSubInterface(self.monitor_interface, FIF.VIEW, i18n.tr("tab_monitor"))
         self.addSubInterface(self.autocatch_interface, FIF.ZOOM, i18n.tr("tab_autocatch"))
-        self.addSubInterface(self.auth_interface, FIF.SETTING, i18n.tr("tab_auth"))
+        self.addSubInterface(self.auth_interface, FIF.FINGERPRINT, i18n.tr("tab_auth"))
+        self.addSubInterface(self.settings_interface, FIF.SETTING, i18n.tr("tab_settings"), position=NavigationItemPosition.BOTTOM)
         self.addSubInterface(self.about_interface, FIF.INFO, i18n.tr("tab_about"), position=NavigationItemPosition.BOTTOM)
 
         self.navigationInterface.expand()
