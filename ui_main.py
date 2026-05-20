@@ -13,7 +13,7 @@ import threading
 import datetime
 from PyQt6.QtGui import QPixmap, QIcon, QIntValidator, QDesktopServices
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
-from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel
+from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
 from qfluentwidgets import (FluentWindow, SubtitleLabel, BodyLabel, LineEdit,
                             PushButton, TextEdit, CardWidget,
                             SwitchButton,
@@ -40,6 +40,7 @@ class BrandingWidget(QWidget):
 
         self.icon_label = QLabel(self)
         self.icon_label.setStyleSheet("background-color: rgba(255, 255, 255, 0.85); border-radius: 4px; padding: 2px;")
+        self.icon_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         logo_path = os.path.join(data_dir, "assets", "logo.png")
         if not os.path.exists(logo_path):
@@ -56,6 +57,8 @@ class BrandingWidget(QWidget):
         self.title_label.setStyleSheet(
             "font-size: 15px; font-weight: bold; color: white; background: transparent; margin-left: 10px;"
         )
+        self.title_label.setWordWrap(False)
+        self.title_label.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
 
         self.layout.addWidget(self.icon_label)
         self.layout.addWidget(self.title_label)
@@ -607,7 +610,7 @@ class KeanSeatsCatcherApp(FluentWindow):
         self.setWindowTitle("KeanSeatsCatcher")
         self.setWindowIcon(QIcon(os.path.join(data_dir, "assets", "logo.ico")))
         self.resize(1000, 650)
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(900, 650)
 
         self.navigationInterface.setReturnButtonVisible(False)
         self.navigationInterface.setExpandWidth(207)
@@ -624,6 +627,8 @@ class KeanSeatsCatcherApp(FluentWindow):
             nav_panel.menuButton.setParent(None)
         except Exception:
             pass
+
+        self.navigationInterface.panel.setMinimumExpandWidth(800)
 
         self.branding_widget = BrandingWidget(self)
         self.navigationInterface.addWidget(
