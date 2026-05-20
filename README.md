@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshot.png" width="800" alt="KeanSeatsCatcher GUI Screenshot">
+  <img src="assets/screenshot_v1.3.png" width="800" alt="KeanSeatsCatcher GUI Screenshot">
 </p>
 
 ---
