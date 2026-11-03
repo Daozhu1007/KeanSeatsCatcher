@@ -113,7 +113,7 @@ class AutoCatchInterface(QWidget):
             self.btn_start.setEnabled(True)
 
     def log(self, msg, state="normal"):
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
         prefix = ">> "
         if state == "error":
             prefix = "[ERROR] "
@@ -124,6 +124,10 @@ class AutoCatchInterface(QWidget):
             self.log_box.verticalScrollBar().maximum())
 
     def start_monitoring(self):
+        if self.is_running:
+            return
+        if self.sibling and hasattr(self.sibling, "ping_worker") and self.sibling.ping_worker.isRunning():
+            return
         if self.api_engine is None:
             InfoBar.error(
                 i18n.tr("msg_engine_not_ready"),

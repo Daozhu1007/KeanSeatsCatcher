@@ -2,9 +2,13 @@ services:
   ksc:
     build: .
     container_name: ksc-auto-catch
-    restart: unless-stopped
+    # Do not restart a completed/stopped registration worker and replay Add.
+    restart: "no"
+    environment:
+      KSC_LOG_DIR: /app/logs
     volumes:
       - ./session.json:/app/session.json:ro
+      - ./logs:/app/logs
 
     command:
       # --- Required ---

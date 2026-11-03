@@ -36,6 +36,13 @@ However:
 
 ## Dual-Engine Architecture
 
+**Registration reliability update (2026-11-03):** Results are tracked per Section;
+timeouts remain UNKNOWN. The real account-registration reader is not connected yet
+(the available session had expired), so an uncertain submission pauses repeated Add
+requests and cannot be reported as confirmed success. Add/Waitlist no longer override
+credits with 3; omission of that field still needs validation against a real webpage request.
+See [verification behavior, logs and remaining integration work](docs/Registration-Verification.md).
+
 KSC ships with two independent engines sharing the same API core.
 
 ### 1. GUI Desktop Mode (Windows)
@@ -48,11 +55,12 @@ ui_main.py  →  PyQt6 + qfluentwidgets
 |---|---|
 | **Dashboard** | One-shot scheduled attack or continuous monitoring with countdown timer |
 | **Auto-Catch** | Background polling loop — detects open seats and attacks instantly |
-| **Session Auto-Recovery** | Detects 401/403 / login redirect mid-poll; silently re-authenticates via Selenium using the local Edge profile (no 2FA required); hot-swaps credentials into the live engine without restart |
+| **Session Auto-Recovery** | Detects 401 / login redirects in all workers; tries one same-account recovery and verifies it; stops if recovery cannot be confirmed |
 | **Memory Safety** | Log widget capped at 1 000 lines; minimum 1 s polling interval to prevent CPU thrashing |
 | **Recovery Counter** | Status bar shows `Polling (Round #1245) \| Recoveries: 3...` for situational awareness |
-| **Waitlist Fallback** | Configurable automatic `Waitlist` action when standard `Add` is rejected |
-| **Ping** | One-click server latency test |
+| **Waitlist Fallback** | Requires a scoped Closed rejection and a verified record showing the Section is not registered |
+| **Session Check** | Valid / expired / unknown session status, with response time |
+| **Event Logs** | Millisecond JSONL logs in `~/.keanseatscatcher/logs` (override with `KSC_LOG_DIR`); no credentials |
 
 ### 2. CLI Headless Mode (Linux Server · Cloud Phantom)
 

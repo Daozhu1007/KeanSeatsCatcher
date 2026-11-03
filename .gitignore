@@ -71,6 +71,8 @@ docs/_build/
 
 # Sessions
 session.json
+logs/
+registration-*.jsonl
 
 # PyBuilder
 .pybuilder/

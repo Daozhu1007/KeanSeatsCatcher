@@ -1,5 +1,8 @@
 # Auto-Catch 模式集成架构说明书
 
+> 本文为历史设计草案。2026-11-03 的注册结果判定、超时处理、共享 Worker 逻辑与日志
+> 以 [Registration-Verification.md](Registration-Verification.md) 和当前代码为准。
+
 > **状态**: 草案 — 待评审
 > **日期**: 2026-05-16
 > **约束**: 严禁修改 `core_api.py` 现有发包逻辑；未经明确批准不得改动任何代码文件。

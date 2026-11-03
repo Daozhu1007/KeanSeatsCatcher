@@ -3,6 +3,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from i18n import i18n
 from core_api import SessionExpiredError
+from worker_session import recover_session
 
 STATE_IDLE = 0
 STATE_POLLING = 1
@@ -48,27 +49,24 @@ class AutoCatchWorker(QThread):
             "error")
         self.session_expired_signal.emit()
 
-        if self.auth_manager is None:
+        if self.auth_manager is None or self.recovery_count >= 1 or not self.is_running:
             self.log_signal.emit(
-                "[FATAL] No auth manager available for session recovery. Stopping Auto-Catch.",
+                i18n.tr("log_session_stopped"),
                 "error")
             self.session_recovered_signal.emit(False)
             self.is_running = False
             return False
 
-        try:
-            creds = self.auth_manager.silent_relogin()
-            self.api_engine.update_credentials(
-                creds["cookies"], creds["verification_token"])
-            self.recovery_count += 1
+        self.recovery_count += 1
+        if recover_session(self.api_engine, self.auth_manager):
             self.log_signal.emit(
                 "[SUCCESS] Session recovered. Resuming Auto-Catch...",
                 "success")
             self.session_recovered_signal.emit(True)
             return True
-        except Exception as e:
+        else:
             self.log_signal.emit(
-                f"[FATAL] Auto-recovery failed: {e}. Stopping Auto-Catch.",
+                i18n.tr("log_session_stopped"),
                 "error")
             self.session_recovered_signal.emit(False)
             self.is_running = False
@@ -76,18 +74,23 @@ class AutoCatchWorker(QThread):
 
     def run(self):
         self._stop_event.clear()
+        self.api_engine._event("worker_started", worker="autocatch", section_ids=self.section_ids)
         round_count = 0
 
         while self.is_running:
             round_count += 1
+            self.api_engine._event("poll_started", worker="autocatch", poll_round=round_count,
+                                   section_ids=self.section_ids)
             self.round_signal.emit(round_count, self.recovery_count)
             self.status_signal.emit(STATE_POLLING)
             self.log_signal.emit(
                 i18n.tr("autocatch_round_start", round_count), "normal")
 
-            found_seats = False
+            # Reconcile a previous submission even if all sections are now full.
+            found_seats = (self.api_engine.needs_verification(self.section_ids)
+                           or self.api_engine.all_registered(self.section_ids))
             session_lost = False
-            for sec_id in self.section_ids:
+            for sec_id in ([] if found_seats else self.api_engine.pending_sections(self.section_ids)):
                 if not self.is_running:
                     break
                 try:
@@ -100,12 +103,14 @@ class AutoCatchWorker(QThread):
                     session_lost = True
                     break
 
+            self.api_engine._event("poll_finished", worker="autocatch", poll_round=round_count,
+                                   session_expired=session_lost, needs_attack=found_seats)
             if session_lost:
                 if not self._recover_session():
                     break
                 continue
 
-            if found_seats:
+            if found_seats and self.is_running:
                 self.status_signal.emit(STATE_ATTACKING)
 
                 try:
@@ -133,7 +138,11 @@ class AutoCatchWorker(QThread):
                 self.log_signal.emit(
                     i18n.tr("autocatch_no_seats"), "normal")
 
+            if not self.api_engine.pending_sections(self.section_ids) and not self.api_engine.needs_verification(self.section_ids):
+                self.is_running = False
             if self.is_running:
-                self._sleep(max(1.0, self.interval))
+                self._sleep(max(1.0, self.interval, self.api_engine.retry_delay))
 
+        self.api_engine._event("worker_stopped", worker="autocatch",
+                              success=self.api_engine.all_registered(self.section_ids))
         self.status_signal.emit(STATE_IDLE)

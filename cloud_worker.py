@@ -5,6 +5,7 @@ import logging
 import requests
 
 from core_api import SessionExpiredError
+from worker_session import recover_session
 
 logger = logging.getLogger("CloudSniper")
 
@@ -73,21 +74,18 @@ class CloudWorker(threading.Thread):
         """
         logger.warning("Session expired. Initiating automatic re-authentication...")
 
-        if self.auth_manager is None:
-            logger.error("No auth manager available for session recovery. Stopping.")
+        if self.auth_manager is None or self.recovery_count >= 1 or not self.is_running:
+            logger.error("Session recovery unavailable or already attempted. Stopping; please log in again.")
             self.is_running = False
             return False
 
-        try:
-            creds = self.auth_manager.silent_relogin()
-            self.api_engine.update_credentials(
-                creds["cookies"], creds["verification_token"])
-            self.recovery_count += 1
+        self.recovery_count += 1
+        if recover_session(self.api_engine, self.auth_manager, headless=True):
             logger.info("Session recovered (#%d). Resuming Auto-Catch...",
                         self.recovery_count)
             return True
-        except Exception as e:
-            logger.error("Auto-recovery failed: %s. Stopping.", e)
+        else:
+            logger.error("Session recovery could not be verified. Stopping; please log in again.")
             self.is_running = False
             return False
 
@@ -98,16 +96,20 @@ class CloudWorker(threading.Thread):
 
     def run(self):
         self._stop_event.clear()
+        self.api_engine._event("worker_started", worker="cloud", section_ids=self.section_ids)
         round_count = 0
 
         while self.is_running:
             round_count += 1
+            self.api_engine._event("poll_started", worker="cloud", poll_round=round_count,
+                                   section_ids=self.section_ids)
             logger.info("--- Round #%d | Recoveries: %d ---",
                         round_count, self.recovery_count)
 
-            found_seats = False
+            found_seats = (self.api_engine.needs_verification(self.section_ids)
+                           or self.api_engine.all_registered(self.section_ids))
             session_lost = False
-            for sec_id in self.section_ids:
+            for sec_id in ([] if found_seats else self.api_engine.pending_sections(self.section_ids)):
                 if not self.is_running:
                     break
                 try:
@@ -120,12 +122,14 @@ class CloudWorker(threading.Thread):
                     session_lost = True
                     break
 
+            self.api_engine._event("poll_finished", worker="cloud", poll_round=round_count,
+                                   session_expired=session_lost, needs_attack=found_seats)
             if session_lost:
                 if not self._recover_session():
                     break
                 continue
 
-            if found_seats:
+            if found_seats and self.is_running:
                 logger.info("Attacking sections: %s", self.section_ids)
 
                 try:
@@ -152,7 +156,11 @@ class CloudWorker(threading.Thread):
             else:
                 logger.debug("No seats available in target sections.")
 
+            if not self.api_engine.pending_sections(self.section_ids) and not self.api_engine.needs_verification(self.section_ids):
+                self.is_running = False
             if self.is_running:
-                self._sleep(max(1.0, self.interval))
+                self._sleep(max(1.0, self.interval, self.api_engine.retry_delay))
 
+        self.api_engine._event("worker_stopped", worker="cloud",
+                              success=self.api_engine.all_registered(self.section_ids))
         logger.info("CloudWorker stopped.")

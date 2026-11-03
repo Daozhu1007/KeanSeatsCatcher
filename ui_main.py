@@ -23,7 +23,9 @@ from qfluentwidgets import (FluentWindow, SubtitleLabel, BodyLabel, LineEdit,
 
 from i18n import i18n, load_config
 from core_auth import KeanAuthManager
-from core_api import KeanApiClient
+from core_api import KeanApiClient, SessionExpiredError
+from registration_state import SessionStatus
+from worker_session import recover_session
 from ui_autocatch import AutoCatchInterface
 from ui_settings import SettingsInterface
 
@@ -71,15 +73,14 @@ class BrandingWidget(QWidget):
 
 
 class PingWorker(QThread):
-    result_signal = pyqtSignal(int)
+    result_signal = pyqtSignal(object)
 
     def __init__(self, api_engine):
         super().__init__()
         self.api_engine = api_engine
 
     def run(self):
-        latency = self.api_engine.test_latency()
-        self.result_signal.emit(latency)
+        self.result_signal.emit(self.api_engine.check_session())
 
 
 class MonitorWorker(QThread):
@@ -87,7 +88,8 @@ class MonitorWorker(QThread):
     countdown_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool)
 
-    def __init__(self, api_engine, section_ids, interval, target_time_str, enable_waitlist=False):
+    def __init__(self, api_engine, section_ids, interval, target_time_str, enable_waitlist=False,
+                 auth_manager=None):
         super().__init__()
         self.is_running = True
         self.api_engine = api_engine
@@ -95,6 +97,7 @@ class MonitorWorker(QThread):
         self.interval = interval
         self.target_time_str = target_time_str
         self.enable_waitlist = enable_waitlist
+        self.auth_manager = auth_manager
         self._stop_event = threading.Event()
 
         self.api_engine.log_callback = lambda msg, level="normal": self.log_signal.emit(msg, level)
@@ -104,6 +107,7 @@ class MonitorWorker(QThread):
 
     def run(self):
         self._stop_event.clear()
+        self.api_engine._event("worker_started", worker="dashboard", section_ids=self.section_ids)
         if self.target_time_str:
             now = datetime.datetime.now()
             parts = self.target_time_str.replace("：", ":").strip().split(":")
@@ -145,6 +149,7 @@ class MonitorWorker(QThread):
             self.countdown_signal.emit(i18n.tr("msg_requesting"))
 
         if not self.is_running:
+            self.api_engine._event("worker_stopped", worker="dashboard", success=False)
             self.finished_signal.emit(False)
             return
 
@@ -152,7 +157,7 @@ class MonitorWorker(QThread):
 
         attempt = 1
         success_flag = False
-        consecutive_timeouts = 0
+        recovery_attempted = False
 
         while self.is_running:
             self.log_signal.emit(i18n.tr("msg_round_start", attempt), "normal")
@@ -167,30 +172,34 @@ class MonitorWorker(QThread):
                     self.is_running = False
                     break
                 else:
-                    if "超时" in msg or "timeout" in msg.lower():
-                        consecutive_timeouts += 1
-                        if consecutive_timeouts <= 2:
-                            self.log_signal.emit(i18n.tr("msg_timeout_retry", attempt), "error")
-                            self._sleep(2)
-                        else:
-                            self.log_signal.emit(
-                                i18n.tr("msg_consecutive_timeouts", consecutive_timeouts, self.interval),
-                                "error")
-                            self._sleep(self.interval)
-                    else:
-                        consecutive_timeouts = 0
-                        self.log_signal.emit(i18n.tr("msg_round_failed", attempt, msg, self.interval), "error")
-                        self._sleep(self.interval)
+                    delay = max(self.interval, self.api_engine.retry_delay)
+                    self.log_signal.emit(i18n.tr("msg_round_failed", attempt, msg, delay), "normal")
+                    if not self.api_engine.pending_sections(self.section_ids) and not self.api_engine.needs_verification(self.section_ids):
+                        self.is_running = False
+                        break
+                    self._sleep(delay)
 
+            except SessionExpiredError:
+                self.log_signal.emit(i18n.tr("log_session_recovery"), "error")
+                if recovery_attempted or not self.is_running:
+                    self.log_signal.emit(i18n.tr("log_session_stopped"), "error")
+                    self.is_running = False
+                    break
+                recovery_attempted = True
+                if not recover_session(self.api_engine, self.auth_manager):
+                    self.log_signal.emit(i18n.tr("log_session_stopped"), "error")
+                    self.is_running = False
+                    break
             except Exception as e:
-                self.log_signal.emit(i18n.tr("msg_exception", str(e)), "error")
-                self._sleep(self.interval)
+                self.log_signal.emit(i18n.tr("msg_exception", type(e).__name__), "error")
+                self._sleep(max(1, self.interval, self.api_engine.retry_delay))
 
             attempt += 1
 
         if not success_flag:
-            self.log_signal.emit(i18n.tr("msg_manual_stop"), "normal")
+            self.log_signal.emit(i18n.tr("msg_process_stopped"), "normal")
 
+        self.api_engine._event("worker_stopped", worker="dashboard", success=success_flag)
         self.finished_signal.emit(success_flag)
 
 
@@ -220,6 +229,7 @@ class MonitorInterface(QWidget):
         self.layout.setSpacing(16)
 
         self.api_engine = None
+        self.auth_manager = None
         self.sibling = None
 
         title = SubtitleLabel(i18n.tr("monitor_title"))
@@ -307,13 +317,15 @@ class MonitorInterface(QWidget):
 
     def lock_start(self):
         self.btn_start.setEnabled(False)
+        self.btn_ping.setEnabled(False)
 
     def unlock_start(self):
         if not self.is_running:
             self.btn_start.setEnabled(True)
+            self.btn_ping.setEnabled(True)
 
     def log(self, msg, state="normal"):
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
         prefix = ">> "
         if state == "error": prefix = "[ERROR] "
         if state == "success": prefix = "[SUCCESS] "
@@ -326,12 +338,15 @@ class MonitorInterface(QWidget):
 
     def on_worker_finished(self, success):
         self.btn_start.setEnabled(True)
+        self.btn_ping.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.btn_start.setText(i18n.tr("btn_start"))
         if self.sibling:
             self.sibling.unlock_start()
 
     def start_attack(self):
+        if self.is_running or (hasattr(self, "ping_worker") and self.ping_worker.isRunning()):
+            return
         if self.api_engine is None:
             InfoBar.error(i18n.tr("msg_engine_not_ready"), i18n.tr("msg_goto_auth"), duration=3000, parent=self)
             return
@@ -369,11 +384,12 @@ class MonitorInterface(QWidget):
             self.worker.wait(3000)
 
         self.btn_start.setEnabled(False)
+        self.btn_ping.setEnabled(False)
         self.btn_stop.setEnabled(True)
 
         waitlist_enabled = self.waitlist_switch.isChecked()
         self.worker = MonitorWorker(self.api_engine, section_list, interval_time, target_time_str,
-                                    enable_waitlist=waitlist_enabled)
+                                    enable_waitlist=waitlist_enabled, auth_manager=self.auth_manager)
         self.worker.log_signal.connect(self.log)
         self.worker.countdown_signal.connect(self.update_btn_text)
         self.worker.finished_signal.connect(self.on_worker_finished)
@@ -386,35 +402,41 @@ class MonitorInterface(QWidget):
         if hasattr(self, 'worker'):
             self.worker.is_running = False
             self.worker._stop_event.set()
-        self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
-        if self.sibling:
-            self.sibling.unlock_start()
         self.log(i18n.tr("msg_stopping"))
 
     def ping_server(self):
+        if self.is_running or (self.sibling and self.sibling.is_running):
+            return
         if self.api_engine is None:
             InfoBar.error(i18n.tr("msg_engine_not_ready"), i18n.tr("msg_goto_auth"), duration=3000, parent=self)
             return
 
         self.btn_ping.setEnabled(False)
+        self.btn_start.setEnabled(False)
+        if self.sibling:
+            self.sibling.lock_start()
         self.ping_worker = PingWorker(self.api_engine)
         self.ping_worker.result_signal.connect(self.on_ping_result)
         self.ping_worker.start()
 
-    def on_ping_result(self, latency):
+    def on_ping_result(self, result):
         self.btn_ping.setEnabled(True)
-        if latency >= 0:
+        self.btn_start.setEnabled(True)
+        if self.sibling:
+            self.sibling.unlock_start()
+        if result.status == SessionStatus.VALID:
             InfoBar.success(
                 i18n.tr("msg_ping_title"),
-                i18n.tr("msg_ping_result", f"{latency} ms"),
+                i18n.tr("msg_ping_result", f"{result.elapsed_ms} ms"),
                 duration=3000,
                 parent=self
             )
         else:
             InfoBar.warning(
                 i18n.tr("msg_ping_title"),
-                i18n.tr("msg_ping_timeout"),
+                i18n.tr("msg_session_expired" if result.status == SessionStatus.EXPIRED
+                        else "msg_ping_timeout"),
                 duration=3000,
                 parent=self
             )
@@ -647,6 +669,7 @@ class KeanSeatsCatcherApp(FluentWindow):
         self.auth_interface.engine_ready_signal.connect(self.monitor_interface.set_api_engine)
         self.auth_interface.engine_ready_signal.connect(self.autocatch_interface.set_api_engine)
         self.autocatch_interface.set_auth_manager(self.auth_interface.auth_manager)
+        self.monitor_interface.auth_manager = self.auth_interface.auth_manager
 
         self.monitor_interface.sibling = self.autocatch_interface
         self.autocatch_interface.sibling = self.monitor_interface
