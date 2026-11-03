@@ -111,3 +111,27 @@ def test_stop_during_availability_does_not_send_add(tmp_path):
     api.check_section_status = stop_after_poll
     worker.run()
     assert api.session.request.call_count == 0
+
+
+@pytest.mark.parametrize("worker_class", [AutoCatchWorker, CloudWorker])
+def test_unknown_reconciliation_requires_a_new_seat_check_before_retry(tmp_path, worker_class):
+    api = client(tmp_path, [response({"Available": 1}), requests.ReadTimeout(),
+                           response({"Available": 0}), response({"Available": 1}), requests.ReadTimeout()],
+                 [snapshot(), snapshot(a=S.NOT_REGISTERED), snapshot(a=S.REGISTERED)])
+    worker = worker_class(api, ["a"], interval=1)
+    worker._sleep = lambda seconds: api._retry_after.clear()
+    worker.run()
+    operations = [call.args[1].rsplit("/", 1)[-1] for call in api.session.request.call_args_list]
+    assert operations == ["SectionDetails", "RegisterSections", "SectionDetails", "SectionDetails", "RegisterSections"]
+    assert api.all_registered(["a"])
+
+
+@pytest.mark.parametrize("worker_class", [AutoCatchWorker, CloudWorker])
+def test_one_open_section_does_not_authorize_add_for_a_full_section(tmp_path, worker_class):
+    api = client(tmp_path, [response({"Available": 1}), response({"Available": 0}), requests.ReadTimeout()],
+                 [snapshot(a=S.REGISTERED, b=S.NOT_REGISTERED)])
+    worker = worker_class(api, ["a", "b"], interval=1)
+    worker._sleep = lambda seconds: setattr(worker, "is_running", False)
+    worker.run()
+    registrations = api.session.request.call_args.kwargs["json"]["sectionRegistrations"]
+    assert [item["SectionId"] for item in registrations] == ["a"]

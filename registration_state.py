@@ -1,8 +1,7 @@
 """Registration evidence shared by Dashboard, Auto-Catch and the CLI.
 
-There is deliberately no guessed Ellucian schedule endpoint here. Implement
-RegistrationReader only after capturing a read-only request and its response
-from the authenticated Self-Service page (see docs/Registration-Verification.md).
+The Ellucian adapter follows the observed read-only DegreePlans/Current response
+(see docs/Registration-Verification.md).
 """
 from dataclasses import dataclass, field
 from enum import Enum
@@ -12,6 +11,7 @@ from typing import Mapping, Protocol, Sequence
 class SectionStatus(str, Enum):
     UNKNOWN = "UNKNOWN"
     REGISTERED = "REGISTERED"
+    PLANNED = "PLANNED"
     NOT_REGISTERED = "NOT_REGISTERED"
     REJECTED = "REJECTED"
     WAITLISTED = "WAITLISTED"

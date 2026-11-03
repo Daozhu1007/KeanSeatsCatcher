@@ -1,0 +1,106 @@
+"""Synthetic projection of the observed Current response, never owner data.
+
+Field names and the registered/course-only shapes were observed on 2026-11-03.
+Selected-plan and waitlist variants follow the flags used by the page's script;
+the owner's account contained no waitlisted sections.
+"""
+import copy
+from unittest.mock import Mock
+
+import pytest
+
+from core_api import KeanApiClient
+from registration_reader import DegreePlanRegistrationReader
+from registration_state import SectionStatus as S
+from test_registration import response
+
+
+def course(sid, state, term="2027SP"):
+    section = {"Id": sid, "TermId": term} if sid else None
+    registered = state == S.REGISTERED
+    return {
+        "TermCode": term, "HasSection": sid is not None,
+        "HasRegisteredSection": registered, "Section": section,
+        "AcademicHistory": {"Section": section if registered else None},
+        "IsPreregistered": registered, "IsInProgress": False,
+        "IsPlanned": state == S.PLANNED, "IsWaitlisted": state == S.WAITLISTED,
+        "IsDropped": state == S.NOT_REGISTERED, "IsWithdrawn": False, "IsCompleted": False,
+    }
+
+
+@pytest.fixture
+def degree_plan():
+    return {"DegreePlan": {
+        "PersonId": "fixture-student", "Notifications": [], "TermToShow": "2026FA",
+        "Terms": [{
+            "Code": "2027SP", "IsAcademicHistoryAvailable": True, "IsTermCompleted": False,
+            "ActiveSectionIds": ["registered"],
+            "PlannedCourses": [course("registered", S.REGISTERED), course("planned", S.PLANNED),
+                               course("waiting", S.WAITLISTED), course(None, S.PLANNED)],
+        }],
+    }}
+
+
+def test_observed_contract_distinguishes_states_and_uses_explicit_term(degree_plan, tmp_path):
+    reader = DegreePlanRegistrationReader("2027SP")
+    api = KeanApiClient({}, "test-token", "fixture-student", reader, log_dir=tmp_path)
+    api.session.request = Mock(return_value=response(degree_plan))
+    ids = ["registered", "planned", "waiting", "absent"]
+    snapshot = api.verify_registration(ids)
+    assert [snapshot.records[sid].status for sid in ids] == [S.REGISTERED, S.PLANNED, S.WAITLISTED, S.NOT_REGISTERED]
+    assert api.pending_sections(ids) == ["planned", "absent"]
+    call = api.session.request.call_args
+    assert call.args == ("GET", api.base_url + "/Current")
+    assert call.kwargs["params"] == {"studentId": "fixture-student"}
+    assert call.kwargs["allow_redirects"] is False
+    assert all(record.server_registered_at is None for record in snapshot.records.values())
+
+
+@pytest.mark.parametrize("problem", ["account", "missing_term", "history_unavailable", "notifications",
+                                     "missing_active_record", "missing_flag", "conflicting_flags"])
+def test_incomplete_or_mismatched_records_cannot_authorize_absence(degree_plan, problem):
+    plan = degree_plan["DegreePlan"]
+    term = plan["Terms"][0]
+    if problem == "account":
+        plan["PersonId"] = "another-student"
+    elif problem == "missing_term":
+        term["Code"] = "2027SPW"
+    elif problem == "history_unavailable":
+        term["IsAcademicHistoryAvailable"] = False
+    elif problem == "notifications":
+        plan["Notifications"] = [{"Type": "Error", "Message": "Fixture partial history"}]
+    elif problem == "missing_active_record":
+        term["ActiveSectionIds"].append("omitted")
+    elif problem == "missing_flag":
+        del term["PlannedCourses"][0]["IsPreregistered"]
+    else:
+        term["PlannedCourses"][0]["IsPlanned"] = True
+    result = DegreePlanRegistrationReader().parse(degree_plan, "fixture-student", ["absent", "planned"])
+    assert "absent" not in result.records
+    assert "planned" not in result.records or result.records["planned"].status == S.UNKNOWN
+
+
+def test_section_in_another_term_is_unknown_not_an_add_target(degree_plan):
+    other = copy.deepcopy(degree_plan["DegreePlan"]["Terms"][0])
+    other.update(Code="2027SPW", PlannedCourses=[course("other-term", S.REGISTERED, "2027SPW")])
+    degree_plan["DegreePlan"]["Terms"].append(other)
+    result = DegreePlanRegistrationReader().parse(degree_plan, "fixture-student", ["other-term"])
+    assert result.records["other-term"].status == S.UNKNOWN
+
+
+def test_existing_registration_is_found_before_first_add(degree_plan, tmp_path):
+    api = KeanApiClient({}, "test-token", "fixture-student", DegreePlanRegistrationReader(), log_dir=tmp_path)
+    api.session.request = Mock(return_value=response(degree_plan))
+    assert api.execute_full_attack(["registered"])[0]
+    assert api.execute_full_attack(["registered"])[0]
+    assert api.session.request.call_count == 1
+    assert api.session.request.call_args.args[0] == "GET"
+    assert not api.results["registered"].attempted
+
+
+def test_missing_reader_pauses_initial_add(tmp_path):
+    api = KeanApiClient({}, "test-token", "fixture-student", log_dir=tmp_path)
+    api.session.request = Mock(side_effect=AssertionError("No HTTP allowed"))
+    assert not api.execute_full_attack(["unverified"])[0]
+    assert api.results["unverified"].awaiting_verification
+    api.session.request.assert_not_called()

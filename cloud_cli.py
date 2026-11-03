@@ -15,6 +15,7 @@ import sys
 
 from core_api import KeanApiClient
 from cloud_worker import CloudWorker
+from registration_reader import DegreePlanRegistrationReader, DEFAULT_TERM
 
 
 def setup_logging():
@@ -45,6 +46,10 @@ def parse_args():
     parser.add_argument(
         '--sections', required=True,
         help='Target section IDs, comma-separated (e.g. 26012,26686)')
+    parser.add_argument('--term', default=DEFAULT_TERM,
+                        help=f'Registration term code (default: {DEFAULT_TERM}, Spring 2027)')
+    parser.add_argument('--verify-only', action='store_true',
+                        help='Read account registration states and exit without submitting anything')
     parser.add_argument(
         '--interval', type=int, default=15,
         help='Polling interval in seconds (default: 15, minimum enforced: 1)')
@@ -94,7 +99,7 @@ def load_session_from_file(filepath, logger):
     return data
 
 
-def authenticate(logger, headless: bool, session_file: str = None):
+def authenticate(logger, headless: bool, session_file: str = None, term_code=DEFAULT_TERM):
     """
     Authenticate and return a (KeanApiClient, KeanAuthManager) tuple.
 
@@ -115,7 +120,8 @@ def authenticate(logger, headless: bool, session_file: str = None):
         engine = KeanApiClient(
             cookies_dict=creds["cookies"],
             verification_token=creds["verification_token"],
-            student_id=creds["student_id"])
+            student_id=creds["student_id"],
+            registration_reader=DegreePlanRegistrationReader(term_code))
         return engine, None
 
     from core_auth import KeanAuthManager  # lazy import — requires selenium
@@ -151,7 +157,8 @@ def authenticate(logger, headless: bool, session_file: str = None):
     engine = KeanApiClient(
         cookies_dict=creds["cookies"],
         verification_token=creds["verification_token"],
-        student_id=creds["student_id"])
+        student_id=creds["student_id"],
+        registration_reader=DegreePlanRegistrationReader(term_code))
     return engine, auth
 
 
@@ -169,6 +176,7 @@ def main():
     logger.info("=" * 56)
     logger.info("KSC Cloud Phantom — 24/7 Auto-Catch Daemon")
     logger.info("Sections : %s", section_ids)
+    logger.info("Term     : %s", args.term)
     logger.info("Interval : %ds (min 1s enforced)", args.interval)
     logger.info("Waitlist : %s", "ON" if args.waitlist else "OFF")
     if args.load_session:
@@ -181,10 +189,19 @@ def main():
         logger.info("Drop Sec : %s", args.drop_section)
     logger.info("=" * 56)
 
-    engine, auth = authenticate(logger, headless, session_file=args.load_session)
+    engine, auth = authenticate(logger, headless, session_file=args.load_session, term_code=args.term)
     if engine is None:
         logger.error("Authentication failed. Exiting.")
         sys.exit(1)
+
+    if args.verify_only:
+        try:
+            engine.execute_full_attack(section_ids, submission_ids=[])
+            logger.info("Read-only verification: %s", engine.result_message(section_ids))
+        finally:
+            if auth is not None:
+                auth.close_browser()
+        return
 
     worker = CloudWorker(
         api_engine=engine,

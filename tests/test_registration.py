@@ -26,10 +26,24 @@ def snapshot(**states):
                                 reason="fixture_account_records")
 
 
-def client(tmp_path, replies, snapshots=None):
-    reader = None if snapshots is None else Mock()
-    if reader:
-        reader.read.side_effect = snapshots
+def client(tmp_path, replies, snapshots=None, initially_absent=True):
+    # Submission tests begin with a successful account preflight. Subsequent
+    # reads use the supplied evidence (or simulate a reader outage).
+    reader = Mock()
+    remaining = iter(snapshots or [])
+    first_read = True
+    def read(api, section_ids):
+        nonlocal first_read
+        if first_read and initially_absent:
+            first_read = False
+            return snapshot(**{sid: S.NOT_REGISTERED for sid in section_ids})
+        if snapshots is None:
+            return RegistrationSnapshot(reason="fixture_reader_unavailable")
+        result = next(remaining)
+        if isinstance(result, Exception):
+            raise result
+        return result
+    reader.read.side_effect = read
     api = KeanApiClient({"cookie": "COOKIE_SECRET"}, "TOKEN_SECRET", "fixture-student",
                         registration_reader=reader, log_dir=tmp_path)
     api.session.request = Mock(side_effect=replies)
@@ -276,3 +290,25 @@ def test_response_timestamp_and_malformed_notifications_are_not_success(tmp_path
     end = next(e for e in events(api) if e["event"] == "request_finished")
     assert end["response_received_at"] is not None
     assert api.session.request.call_count == 1  # No CompleteRegistration for malformed response.
+
+
+def test_explicit_expiration_rolls_back_attempt_then_rechecks_after_relogin(tmp_path):
+    api = client(tmp_path, [response(status=401), requests.ReadTimeout()],
+                 [snapshot(a=S.NOT_REGISTERED), snapshot(a=S.REGISTERED, old=S.NOT_REGISTERED)])
+    with pytest.raises(SessionExpiredError):
+        api.execute_full_attack(["a"], drop_section_id="old")
+    assert not api.results["a"].awaiting_verification
+    assert not api.results["a"].attempted
+    assert not api._retry_after and not api._drop_pending and not api._drop_attempted
+    api.update_credentials({}, "new-token", "fixture-student")
+    assert api.execute_full_attack(["a"], drop_section_id="old")[0]
+    assert api.session.request.call_count == 2
+
+
+def test_expired_completion_does_not_erase_an_accepted_add(tmp_path):
+    api = client(tmp_path, [response([]), response(status=401)])
+    with pytest.raises(SessionExpiredError):
+        api.execute_full_attack(["a"], drop_section_id="old")
+    assert api.results["a"].attempted and api.results["a"].awaiting_verification
+    assert api._drop_pending == {"old"}
+    assert not api.pending_sections(["a"])

@@ -106,37 +106,45 @@ class CloudWorker(threading.Thread):
             logger.info("--- Round #%d | Recoveries: %d ---",
                         round_count, self.recovery_count)
 
-            found_seats = (self.api_engine.needs_verification(self.section_ids)
-                           or self.api_engine.all_registered(self.section_ids))
+            found_seats = []
+            success, msg = False, ""
             session_lost = False
-            for sec_id in ([] if found_seats else self.api_engine.pending_sections(self.section_ids)):
+            try:
+                if (self.api_engine.needs_verification(self.section_ids)
+                        or self.api_engine.all_registered(self.section_ids)):
+                    success, msg = self.api_engine.execute_full_attack(
+                        self.section_ids, submission_ids=[])
+            except SessionExpiredError:
+                session_lost = True
+            for sec_id in ([] if session_lost or success else self.api_engine.pending_sections(self.section_ids)):
                 if not self.is_running:
                     break
                 try:
                     if self.api_engine.check_section_status(
                             sec_id, enable_waitlist=self.enable_waitlist):
-                        found_seats = True
+                        found_seats.append(sec_id)
                         logger.info("Seat found! Section %s", sec_id)
-                        break
                 except SessionExpiredError:
                     session_lost = True
                     break
 
             self.api_engine._event("poll_finished", worker="cloud", poll_round=round_count,
-                                   session_expired=session_lost, needs_attack=found_seats)
+                                   session_expired=session_lost, needs_attack=bool(found_seats))
             if session_lost:
                 if not self._recover_session():
                     break
                 continue
 
-            if found_seats and self.is_running:
+            if (found_seats or success) and self.is_running:
                 logger.info("Attacking sections: %s", self.section_ids)
 
                 try:
-                    success, msg = self.api_engine.execute_full_attack(
-                        self.section_ids,
-                        enable_waitlist=self.enable_waitlist,
-                        drop_section_id=self.drop_section_id or None)
+                    if not success:
+                        success, msg = self.api_engine.execute_full_attack(
+                            self.section_ids,
+                            enable_waitlist=self.enable_waitlist,
+                            drop_section_id=self.drop_section_id or None,
+                            submission_ids=found_seats)
                 except SessionExpiredError:
                     logger.warning(
                         "Session expired during attack. Initiating recovery...")

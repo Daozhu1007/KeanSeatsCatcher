@@ -2,7 +2,7 @@ import re
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
@@ -236,6 +236,10 @@ class KeanApiClient:
         section_ids = self.pending_sections(section_ids)
         if not section_ids:
             return SubmissionResult(SubmissionStatus.UNKNOWN, "nothing_to_submit")
+        previous = {sid: replace(self.results[sid]) for sid in section_ids}
+        previous_retry = self._retry_after.copy()
+        previous_drop_pending = self._drop_pending.copy()
+        previous_drop_attempted = self._drop_attempted.copy()
         registrations = []
         if drop_section_id:
             registrations.append({"SectionId": str(drop_section_id), "Action": "Drop",
@@ -258,6 +262,18 @@ class KeanApiClient:
                                  json={"sectionRegistrations": registrations,
                                        "studentId": str(self.student_id)}, timeout=(1.5, 12))
             submission = self._submission_response(resp, section_ids)
+        except SessionExpiredError:
+            # An explicit authentication rejection did not accept this request.
+            # Undo only this submission; a lost CompleteRegistration response
+            # still retains its earlier Add's uncertainty and drop tracking.
+            for sid, result in previous.items():
+                self.results[sid] = result
+                result.status, result.reason = SectionStatus.UNKNOWN, "session_expired"
+                result.awaiting_verification = False
+            self._retry_after = previous_retry
+            self._drop_pending = previous_drop_pending
+            self._drop_attempted = previous_drop_attempted
+            raise
         except requests.exceptions.RequestException as exc:
             submission = SubmissionResult(SubmissionStatus.UNKNOWN, type(exc).__name__)
         for sid in section_ids:
@@ -297,12 +313,14 @@ class KeanApiClient:
 
     def pending_sections(self, section_ids):
         return [sid for sid in self._ensure_sections(section_ids)
-                if self.results[sid].status not in (SectionStatus.REGISTERED, SectionStatus.WAITLISTED)
+                if self.results[sid].status in (SectionStatus.NOT_REGISTERED, SectionStatus.PLANNED,
+                                                SectionStatus.REJECTED)
                 and not self.results[sid].awaiting_verification]
 
     def needs_verification(self, section_ids):
         return bool(self._drop_pending) or any(
-            self.results[sid].awaiting_verification for sid in self._ensure_sections(section_ids))
+            self.results[sid].awaiting_verification or self.results[sid].status == SectionStatus.UNKNOWN
+            for sid in self._ensure_sections(section_ids))
 
     def read_registration_status(self, section_ids):
         if self.registration_reader is None:
@@ -337,19 +355,20 @@ class KeanApiClient:
                 if record.status == SectionStatus.REGISTERED:
                     result.first_confirmed_at = result.first_confirmed_at or now
                     result.server_registered_at = record.server_registered_at
-            elif record and record.status == SectionStatus.NOT_REGISTERED:
-                result.status = SectionStatus.REJECTED if result.rejection else SectionStatus.NOT_REGISTERED
+            elif record and record.status in (SectionStatus.NOT_REGISTERED, SectionStatus.PLANNED):
+                result.status = SectionStatus.REJECTED if result.rejection else record.status
                 result.reason = result.rejection or "account_record_not_registered"
                 # A timed-out request may still be processing on the server.
-                result.awaiting_verification = time.monotonic() < self._retry_after.get(sid, 0)
-            elif result.attempted:
+                result.awaiting_verification = (sid in self._retry_after
+                                               and time.monotonic() < self._retry_after[sid])
+            elif result.status != SectionStatus.WAITLISTED:
                 result.awaiting_verification = True
                 if result.status != SectionStatus.REJECTED:
                     result.status = SectionStatus.UNKNOWN
                 result.reason = result.rejection or snapshot.reason
         for sid in list(self._drop_pending):
             record = snapshot.records.get(sid)
-            if record and record.status == SectionStatus.NOT_REGISTERED:
+            if record and record.status in (SectionStatus.NOT_REGISTERED, SectionStatus.PLANNED):
                 self._drop_pending.remove(sid)
         self._event("verification", reason=snapshot.reason, sections=self._states(ids),
                     drop_pending=sorted(self._drop_pending))
@@ -371,7 +390,12 @@ class KeanApiClient:
             message += "; " + i18n.tr("log_drop_unknown", ", ".join(sorted(self._drop_pending)))
         return message
 
-    def execute_full_attack(self, section_ids, enable_waitlist=False, drop_section_id=None):
+    def execute_full_attack(self, section_ids, enable_waitlist=False, drop_section_id=None,
+                            submission_ids=None):
+        """Reconcile first; submission_ids=[] performs a strictly read-only round.
+
+        Polling workers pass only sections whose availability they just checked.
+        """
         ids = self._ensure_sections(section_ids)
         self.round_id += 1
         self._event("round_started", section_ids=ids)
@@ -380,11 +404,13 @@ class KeanApiClient:
             if self.registration_reader is None:
                 self._log(i18n.tr("log_reader_unavailable"), "error")
         try:
-            # No preflight on the first attempt. Reconcile uncertain attempts
-            # even when the seat count has since fallen to zero.
+            # Includes never-attempted targets: existing registrations must be
+            # discovered before the first Add, even if their sections are full.
             if self.needs_verification(ids):
                 self.verify_registration(ids)
             pending = self.pending_sections(ids)
+            if submission_ids is not None:
+                pending = [sid for sid in pending if sid in submission_ids]
             if self._drop_pending:
                 pending = []
             # Only a previous Closed rejection plus an authoritative negative

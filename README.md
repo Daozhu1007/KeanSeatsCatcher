@@ -37,11 +37,15 @@ However:
 ## Dual-Engine Architecture
 
 **Registration reliability update (2026-11-03):** Results are tracked per Section;
-timeouts remain UNKNOWN. The real account-registration reader is not connected yet
-(the available session had expired), so an uncertain submission pauses repeated Add
-requests and cannot be reported as confirmed success. Add/Waitlist no longer override
-credits with 3; omission of that field still needs validation against a real webpage request.
-See [verification behavior, logs and remaining integration work](docs/Registration-Verification.md).
+the account reader now uses the observed Ellucian `DegreePlans/Current` response.
+GUI and CLI verify the selected term before the first Add, skipping registered and
+waitlisted sections. Unknown results pause submission; Auto-Catch checks availability
+again before retrying. The default term is `2027SP` (Spring 2027); set the GUI's
+registration term or CLI `--term` explicitly for another term.
+Use `--verify-only` with the CLI to read states without starting registration.
+Add/Waitlist still omit credits; the official page supplies planned credits, and
+the omission remains unverified by a real submission.
+See [verification behavior, evidence and remaining limits](docs/Registration-Verification.md).
 
 KSC ships with two independent engines sharing the same API core.
 

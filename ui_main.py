@@ -25,6 +25,7 @@ from i18n import i18n, load_config
 from core_auth import KeanAuthManager
 from core_api import KeanApiClient, SessionExpiredError
 from registration_state import SessionStatus
+from registration_reader import DegreePlanRegistrationReader, DEFAULT_TERM
 from worker_session import recover_session
 from ui_autocatch import AutoCatchInterface
 from ui_settings import SettingsInterface
@@ -465,6 +466,11 @@ class AuthInterface(QWidget):
         info.setStyleSheet("color: #a0a0a0;")
         card_layout.addWidget(info)
 
+        card_layout.addWidget(BodyLabel(i18n.tr("auth_registration_term")))
+        self.term_input = LineEdit()
+        self.term_input.setText(DEFAULT_TERM)
+        card_layout.addWidget(self.term_input)
+
         self.btn_login = PushButton(FIF.GLOBE, i18n.tr("btn_launch_browser"))
         self.btn_extract = PushButton(FIF.DOWNLOAD, i18n.tr("btn_extract"))
         self.btn_extract.setEnabled(False)
@@ -498,6 +504,10 @@ class AuthInterface(QWidget):
             InfoBar.error(i18n.tr("msg_launch_failed"), i18n.tr("msg_browser_error", msg), duration=8000, parent=self)
 
     def handle_extract(self):
+        if not self.term_input.text().strip():
+            InfoBar.error(i18n.tr("msg_extract_failed"), i18n.tr("auth_term_required"),
+                          duration=5000, parent=self)
+            return
         credentials = self.auth_manager.extract_credentials()
         if "error" in credentials:
             InfoBar.error(i18n.tr("msg_extract_failed"), credentials["error"], duration=5000, parent=self)
@@ -508,7 +518,8 @@ class AuthInterface(QWidget):
         api_engine = KeanApiClient(
             cookies_dict=credentials["cookies"],
             verification_token=credentials["verification_token"],
-            student_id=student_id
+            student_id=student_id,
+            registration_reader=DegreePlanRegistrationReader(self.term_input.text())
         )
 
         config = load_config()
@@ -518,6 +529,7 @@ class AuthInterface(QWidget):
         self.btn_extract.setText(i18n.tr("msg_engine_ready", student_id))
         self.btn_extract.setEnabled(False)
         self.btn_login.setEnabled(False)
+        self.term_input.setEnabled(False)
 
         self.engine_ready_signal.emit(api_engine)
         InfoBar.success(i18n.tr("msg_auth_success"), i18n.tr("msg_auth_success_detail", student_id),
