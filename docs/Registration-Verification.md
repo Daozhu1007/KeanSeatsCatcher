@@ -13,7 +13,7 @@ Dashboard 在设定时间发出首批普通 Add。Auto-Catch 在每门课通过�
 - `registration_reader.DegreePlanRegistrationReader` 使用同一 GET，验证 `DegreePlan.PersonId`
   后在 `DegreePlan.Terms` 里查找目标 Section 的精确记录。目标不在任何记录中时，
   根据 `SectionDetails` 返回的匹配 `Id` 和 `TermId` 确定应核对的学期。
-  Auto-Catch 复用常规余量查询的数据，Dashboard 在提交后的核验过程中按需查询。
+  Auto-Catch 复用常规余量查询的数据，Dashboard 在提交后的核验过程中按需查询学期。
 - Spring 2027 的 `2027SP` 与 Wenzhou 的 `2027SPW` 独立核验。授权页只负责登录，
   CLI 旧命令中的 `--term` 仍可解析，核验范围由真实 Section 数据决定。
   本轮在公开课表查询实际确认了 `SectionDetails` 的 `Id` 和 `TermId` 字段。
@@ -23,10 +23,16 @@ Dashboard 在设定时间发出首批普通 Add。Auto-Catch 在每门课通过�
   候补和带 Section 的计划课程测试是依据网页状态字段构造的变体，Owner 当时没有候补记录。
 - 11 月 3 日的只读核验中，页面的已注册 Section 集合与 reader 结果逐项匹配，且待 Add 集合为空。
   HTTP Session Check 返回 VALID。验证过程限定 GET，不调用真实注册、退课、候补或完成注册请求。
-- 移除了 Add/Waitlist 的 `Credits=3`，现在省略该字段，避免擅自修改固定学分。
-  11 月 3 日只读查看官方网页脚本时，确认其发送 `Credits: plannedCourse.Credits()`。
-  **现有省略字段行为仍未经过真实提交验证**；本轮不扩展学分选择，也不发送注册请求来验证。
-  Drop 保留原来的 `Credits: null`；CompleteRegistration 的真实响应仍未观察。
+- v1.3 为每条 Add/Waitlist 写入 `Credits: 3`。固定学分不同的 Section 会触发
+  学分不可修改的校验。提交拒绝与最终课表状态分别核验。
+- 官方网页脚本从对应计划项读取 `plannedCourse.Credits()`，在 `RegisterSections` 中逐条提交。
+  固定学分取自匹配 Section 的 `MinimumCredits`，其 `MaximumCredits` 为 null 或同值。
+  可变学分采用 `Current` 中同账户、同 Section 的有效已选学分。
+  [KeanWISE 规划页脚本](https://kean-ss.colleague.elluciancloud.com/Student/bundles/planning/degreeplansindexscripts)
+- Dashboard 在填写 Section 或启动后后台读取学分。Auto-Catch 和 CLI 复用余量响应中的固定学分，
+  并在后台读取已选学分。已缓存的学分直接写入 Add/Waitlist 请求。
+  到提交时仍未取得可信数值的 Section 会省略 `Credits`，并记录在 `unresolved_credits`。
+  Drop 发送 `Credits: null`。服务器对省略字段的处理及实际注册结果仍需实网确认。
 
 ## 字段与完整性
 
@@ -126,7 +132,8 @@ python cloud_cli.py --load-session session.json --sections <SECTION_IDS> --verif
 ## 验证
 
 运行 `python -m pytest -q`（开发环境需要 pytest 和现有 GUI 依赖）。测试默认禁止真实 HTTP，
-覆盖首次发包顺序、跳过已确认注册、跨学期及账户核验、计划与候补区分、超时但实际成功、混合结果、Duplicate、Closed 与已有选课、登录重定向/拥堵、
+覆盖混合学分的 Add/Waitlist 请求体、学分读取未返回时的首次发包顺序、跳过已确认注册、
+跨学期及账户核验、计划与候补区分、超时但实际成功、混合结果、Duplicate、Closed 与已有选课、登录重定向/拥堵、
 CompleteRegistration 超时、日志完整性/脱敏/磁盘失败、各 Worker 恢复与停止行为。
 另检查 GUI 与 CLI 的真实初始化路径都注入 reader，以及明确会话失效后恢复、UNKNOWN 核验后
 重新检查空位的回归行为。Qt 使用 offscreen 模式，不触发真实注册。

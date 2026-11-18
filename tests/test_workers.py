@@ -1,3 +1,6 @@
+import datetime
+import threading
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -34,6 +37,40 @@ def test_dashboard_shares_verification_and_finishes_only_when_confirmed(tmp_path
     assert finished == [True]
     assert api.session.request.call_count == 1
     assert worker._sleep.call_args.args[0] >= 2
+
+
+def test_dashboard_deadline_does_not_wait_for_credit_lookup(tmp_path, monkeypatch):
+    api = client(tmp_path, [requests.ReadTimeout()], [snapshot(a=S.REGISTERED)])
+    clock = iter([datetime.datetime(2026, 11, 19, 12), datetime.datetime(2026, 11, 19, 12, 0, 1)])
+    monkeypatch.setattr("ui_main.datetime", SimpleNamespace(datetime=SimpleNamespace(now=lambda: next(clock))))
+    lookup_started, release, lookup_finished = threading.Event(), threading.Event(), threading.Event()
+    load = api._prefetch_registration_credits
+
+    def load_and_signal(*args):
+        try:
+            load(*args)
+        finally:
+            lookup_finished.set()
+
+    def slow_details(session, method, url, **kwargs):
+        lookup_started.set()
+        if not release.wait(5):
+            raise requests.ReadTimeout()
+        return response({"Id": "a", "MinimumCredits": 4, "MaximumCredits": None})
+
+    monkeypatch.setattr(api, "_prefetch_registration_credits", load_and_signal)
+    monkeypatch.setattr(requests.Session, "request", slow_details)
+    try:
+        api.prefetch_registration_credits(["a"], include_section_details=True)
+        MonitorWorker(api, ["a"], 0, "12:00:01").run()
+        assert lookup_started.wait(2) and not lookup_finished.is_set()
+        api.session.request.assert_called_once()
+        call = api.session.request.call_args
+        assert call.args == ("POST", api.base_url + "/RegisterSections")
+        assert "Credits" not in call.kwargs["json"]["sectionRegistrations"][0]
+    finally:
+        release.set()
+        assert lookup_finished.wait(3)
 
 
 @pytest.mark.parametrize("worker_class", [MonitorWorker, AutoCatchWorker, CloudWorker])
@@ -130,7 +167,8 @@ def test_unknown_reconciliation_requires_a_new_seat_check_before_retry(tmp_path,
 
 @pytest.mark.parametrize("worker_class", [AutoCatchWorker, CloudWorker])
 def test_open_section_is_sent_without_waiting_to_check_the_next_section(tmp_path, worker_class):
-    api = client(tmp_path, [response({"Available": 1}), requests.ReadTimeout(), response({"Available": 0})],
+    api = client(tmp_path, [response({"Id": "a", "Available": 1, "MinimumCredits": 4, "MaximumCredits": None}),
+                           requests.ReadTimeout(), response({"Available": 0})],
                  [snapshot(a=S.REGISTERED, b=S.NOT_REGISTERED)])
     worker = worker_class(api, ["a", "b"], interval=1)
     worker._sleep = lambda seconds: setattr(worker, "is_running", False)
@@ -139,4 +177,4 @@ def test_open_section_is_sent_without_waiting_to_check_the_next_section(tmp_path
     assert [call.args[1].rsplit("/", 1)[-1] for call in operations] == [
         "SectionDetails", "RegisterSections", "SectionDetails"]
     registrations = operations[1].kwargs["json"]["sectionRegistrations"]
-    assert [item["SectionId"] for item in registrations] == ["a"]
+    assert [(item["SectionId"], item["Credits"]) for item in registrations] == [("a", 4)]

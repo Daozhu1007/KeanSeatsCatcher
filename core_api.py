@@ -1,4 +1,5 @@
 import re
+import threading
 import time
 import uuid
 from collections.abc import Mapping
@@ -12,7 +13,7 @@ from event_log import EventLog, timestamp
 from i18n import i18n
 from registration_state import (RegistrationRecord, RegistrationSnapshot, SectionResult, SectionStatus,
                                 SessionCheck, SessionStatus, SubmissionResult,
-                                SubmissionStatus)
+                                SubmissionStatus, section_credit_limits, valid_credits)
 
 WAITLIST_ACTION = "Waitlist"
 REGISTRATION_GRACE_SECONDS = 5
@@ -62,6 +63,10 @@ class KeanApiClient:
         })
         self.registration_reader = registration_reader
         self.section_terms = {}
+        self._section_credit_limits = {}
+        self._planned_credits = {}
+        self._credit_lookups = set()
+        self._credit_lookup_lock = threading.Lock()
         self.results = {}
         self.events = EventLog(log_dir)
         self.round_id = 0
@@ -129,7 +134,7 @@ class KeanApiClient:
             if data == "Could not validate this request's antiforgery token.":
                 raise SessionExpiredError("invalid_verification_token")
 
-    def _request(self, operation, method, url, section_ids=(), **kwargs):
+    def _request(self, operation, method, url, section_ids=(), *, session=None, **kwargs):
         """All traffic, including future read-only adapters, is audited here."""
         request_id = uuid.uuid4().hex
         start = time.perf_counter()
@@ -138,7 +143,8 @@ class KeanApiClient:
         reason, status, response_received_at = "unknown", None, None
         try:
             # Never forward the verification token to an SSO redirect target.
-            resp = self.session.request(method, url, allow_redirects=False, **kwargs)
+            request_session = self.session if session is None else session
+            resp = request_session.request(method, url, allow_redirects=False, **kwargs)
             response_received_at = timestamp()
             status = resp.status_code
             self._check_expired(resp)
@@ -183,14 +189,16 @@ class KeanApiClient:
         """Compatibility alias; returns a tri-state SessionCheck, not a ping."""
         return self.check_session()
 
-    def _section_details(self, section_id, operation, timeout):
+    def _section_details(self, section_id, operation, timeout, *, session=None):
         root = "/".join(self.base_url.split("/")[:3])
         sid = str(section_id)
-        resp = self._request(operation, "POST", f"{root}/Student/Student/Courses/SectionDetails",
+        path = "/Student/Student/Courses/SectionDetails" if session is None else "/Student/Courses/SectionDetails"
+        resp = self._request(operation, "POST", f"{root}{path}",
                              [sid], json={"sectionId": sid, "studentId": str(self.student_id)},
-                             timeout=timeout)
+                             timeout=timeout, session=session)
         if resp.status_code != 200:
-            self._log(i18n.tr("log_section_check_http", sid, resp.status_code), "normal")
+            if session is None:
+                self._log(i18n.tr("log_section_check_http", sid, resp.status_code), "normal")
             return None
         data = resp.json()
         if not isinstance(data, dict):
@@ -199,9 +207,73 @@ class KeanApiClient:
         if returned_id is not None and str(returned_id) != sid:
             return None
         term = data.get("TermId")
-        if returned_id is not None and isinstance(term, str) and term.strip():
+        if session is None and returned_id is not None and isinstance(term, str) and term.strip():
             self.section_terms[sid] = term
+        limits = section_credit_limits(data)
+        if returned_id is not None and limits is not None:
+            if session is None:
+                self._section_credit_limits[sid] = limits
+            else:
+                self._section_credit_limits.setdefault(sid, limits)
         return data
+
+    def _credits_for(self, section_id):
+        planned = self._planned_credits.get(section_id)
+        limits = self._section_credit_limits.get(section_id)
+        if limits is None:
+            return planned
+        minimum, maximum = limits
+        if minimum == maximum:
+            return minimum
+        if planned is not None and minimum <= planned <= maximum:
+            return planned
+        return None
+
+    def prefetch_registration_credits(self, section_ids, *, include_section_details=False):
+        # Preparatory reads use a separate session and never gate a registration POST.
+        read_credits = getattr(self.registration_reader, "read_credits", None)
+        if read_credits is None and not include_section_details:
+            return
+        with self._credit_lookup_lock:
+            ids = [sid for sid in dict.fromkeys(map(str, section_ids))
+                   if sid not in self._credit_lookups and self._credits_for(sid) is None]
+            self._credit_lookups.update(ids)
+        if ids:
+            try:
+                threading.Thread(
+                    target=self._prefetch_registration_credits,
+                    args=(ids, self.session.headers.copy(), self.session.cookies.copy(),
+                          read_credits, include_section_details), daemon=True).start()
+            except RuntimeError:
+                with self._credit_lookup_lock:
+                    self._credit_lookups.difference_update(ids)
+
+    def _prefetch_registration_credits(self, ids, headers, cookies, read_credits, include_section_details):
+        try:
+            with requests.Session() as session:
+                session.trust_env = False
+                session.headers.update(headers)
+                session.cookies.update(cookies)
+                if read_credits is not None:
+                    try:
+                        for sid, credits in read_credits(self, ids, session).items():
+                            self._planned_credits.setdefault(sid, credits)
+                    except SessionExpiredError:
+                        return  # The worker owns session recovery.
+                    except (requests.exceptions.RequestException, ValueError):
+                        pass  # A catalog response may still resolve fixed credits.
+                if include_section_details:
+                    for sid in ids:
+                        if self._credits_for(sid) is None:
+                            try:
+                                self._section_details(sid, "section_credit_lookup", (1.5, 3), session=session)
+                            except SessionExpiredError:
+                                break
+                            except (requests.exceptions.RequestException, ValueError):
+                                continue
+        finally:
+            with self._credit_lookup_lock:
+                self._credit_lookups.difference_update(ids)
 
     def lookup_section_term(self, section_id):
         if section_id not in self.section_terms:
@@ -318,11 +390,16 @@ class KeanApiClient:
                                   "Credits": None, "DropReasonCode": None, "IntentToWithdrawId": None})
             self._drop_pending.add(drop_section_id)
             self._drop_attempted.add(drop_section_id)
-        # Do not override fixed credits. Omission needs real webpage validation;
-        # variable-credit selection remains unsupported.
-        registrations.extend({"SectionId": sid, "Action": action,
-                              "DropReasonCode": None, "IntentToWithdrawId": None}
-                             for sid in section_ids)
+        unresolved_credits = []
+        for sid in section_ids:
+            registration = {"SectionId": sid, "Action": action,
+                            "DropReasonCode": None, "IntentToWithdrawId": None}
+            credits = self._credits_for(sid)
+            if credits is None:
+                unresolved_credits.append(sid)
+            else:
+                registration["Credits"] = credits
+            registrations.append(registration)
         for sid in section_ids:
             result = self.results[sid]
             result.attempted = result.awaiting_verification = True
@@ -364,7 +441,7 @@ class KeanApiClient:
         self._event("submission", action=action, section_ids=section_ids,
                     status=submission.status, reason=submission.reason,
                     rejections=submission.rejections, duplicates=sorted(submission.duplicates),
-                    drop_section_id=drop_section_id)
+                    drop_section_id=drop_section_id, unresolved_credits=unresolved_credits)
         return submission
 
     def complete_registration(self, section_ids=()):
@@ -422,6 +499,9 @@ class KeanApiClient:
             snapshot = RegistrationSnapshot(reason=type(exc).__name__)
         except (ValueError, TypeError, KeyError):
             snapshot = RegistrationSnapshot(reason="invalid_registration_records")
+        if isinstance(snapshot.planned_credits, Mapping):
+            self._planned_credits.update((sid, credits) for sid, credits in snapshot.planned_credits.items()
+                                         if sid in query_ids and valid_credits(credits))
         now = timestamp()
         for sid in ids:
             result = self.results[sid]

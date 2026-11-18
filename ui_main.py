@@ -12,7 +12,7 @@ import time
 import threading
 import datetime
 from PyQt6.QtGui import QPixmap, QIcon, QIntValidator, QDesktopServices
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal, QUrl
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
 from qfluentwidgets import (FluentWindow, SubtitleLabel, BodyLabel, LineEdit,
                             PushButton, TextEdit, CardWidget,
@@ -310,9 +310,23 @@ class MonitorInterface(QWidget):
         self.btn_stop.clicked.connect(self.stop_attack)
         self.btn_ping.clicked.connect(self.ping_server)
 
+        self._credit_lookup_timer = QTimer(self)
+        self._credit_lookup_timer.setSingleShot(True)
+        self._credit_lookup_timer.setInterval(300)
+        self._credit_lookup_timer.timeout.connect(self._prefetch_credits)
+        self.section_input.textChanged.connect(lambda _: self._credit_lookup_timer.start())
+
     def set_api_engine(self, engine):
         self.api_engine = engine
         self.log(i18n.tr("msg_engine_loaded"), "success")
+        self._credit_lookup_timer.start()
+
+    def _prefetch_credits(self):
+        if self.api_engine and not self.is_running and not (self.sibling and self.sibling.is_running):
+            self.api_engine.prefetch_registration_credits(self._target_sections(), include_section_details=True)
+
+    def _target_sections(self):
+        return [sid for sid in map(str.strip, self.section_input.text().split(",")) if sid]
 
     @property
     def is_running(self):
@@ -361,12 +375,10 @@ class MonitorInterface(QWidget):
                 duration=3000, parent=self)
             return
 
-        raw_sections = self.section_input.text().strip()
-        if not raw_sections:
+        section_list = self._target_sections()
+        if not section_list:
             self.log(i18n.tr("msg_enter_sections"), "error")
             return
-
-        section_list = [s.strip() for s in raw_sections.split(",") if s.strip()]
 
         try:
             interval_time = int(self.interval_input.text())
@@ -400,6 +412,7 @@ class MonitorInterface(QWidget):
 
         if self.sibling:
             self.sibling.lock_start()
+        self.api_engine.prefetch_registration_credits(section_list, include_section_details=True)
 
     def stop_attack(self):
         if hasattr(self, 'worker'):

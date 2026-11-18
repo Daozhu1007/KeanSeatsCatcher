@@ -5,7 +5,25 @@ The Ellucian adapter follows the observed read-only DegreePlans/Current response
 """
 from dataclasses import dataclass, field
 from enum import Enum
+from math import isfinite
 from typing import Mapping, Protocol, Sequence
+
+
+def valid_credits(value):
+    return ((type(value) is int and value >= 0)
+            or (type(value) is float and isfinite(value) and value >= 0))
+
+
+def section_credit_limits(section):
+    minimum = section.get("MinimumCredits")
+    if not valid_credits(minimum) or "MaximumCredits" not in section:
+        return None
+    maximum = section["MaximumCredits"]
+    if maximum is None:
+        return minimum, minimum
+    if valid_credits(maximum) and maximum >= minimum:
+        return minimum, maximum
+    return None
 
 
 class SectionStatus(str, Enum):
@@ -62,6 +80,7 @@ class RegistrationRecord:
 class RegistrationSnapshot:
     records: Mapping[str, RegistrationRecord] = field(default_factory=dict)
     reason: str = "reader_not_configured"
+    planned_credits: Mapping[str, int | float] = field(default_factory=dict)
 
 
 class RegistrationReader(Protocol):

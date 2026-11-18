@@ -5,9 +5,11 @@ Selected-plan and waitlist variants follow the flags used by the page's script;
 the owner's account contained no waitlisted sections.
 """
 import copy
+import threading
 from unittest.mock import Mock
 
 import pytest
+import requests
 
 from core_api import KeanApiClient
 from registration_reader import DegreePlanRegistrationReader
@@ -123,3 +125,67 @@ def test_dashboard_sends_before_reading_account_plan(degree_plan, tmp_path):
     assert api.execute_full_attack(["registered"])[0]
     assert [call.args[1].rsplit("/", 1)[-1] for call in api.session.request.call_args_list] == [
         "RegisterSections", "Current"]
+
+
+def test_prefetched_planned_and_catalog_credits_reach_the_first_add(degree_plan, tmp_path, monkeypatch):
+    term = degree_plan["DegreePlan"]["Terms"][0]
+    term["PlannedCourses"][1]["Credits"] = 2.5
+    api = KeanApiClient({}, "test-token", "fixture-student", DegreePlanRegistrationReader(), log_dir=tmp_path)
+    calls = []
+    ready = threading.Event()
+    load = api._prefetch_registration_credits
+
+    def load_and_signal(*args):
+        try:
+            load(*args)
+        finally:
+            ready.set()
+
+    def catalog(session, method, url, **kwargs):
+        assert session is not api.session
+        calls.append((method, url.rsplit("/", 1)[-1]))
+        if method == "GET":
+            return response(degree_plan)
+        sid = kwargs["json"]["sectionId"]
+        assert sid == "unplanned"
+        return response({"Id": sid, "MinimumCredits": 4.0, "MaximumCredits": None})
+
+    monkeypatch.setattr(api, "_prefetch_registration_credits", load_and_signal)
+    monkeypatch.setattr(requests.Session, "request", catalog)
+    api.prefetch_registration_credits(["planned", "unplanned"], include_section_details=True)
+    assert ready.wait(3)
+    assert calls == [("GET", "Current"), ("POST", "SectionDetails")]
+    assert not api.results  # Reading credits does not reconcile or change registration state.
+    api.session.request = Mock(return_value=response([]))
+    api.register_multiple_sections(["planned", "unplanned"])
+    entries = api.session.request.call_args.kwargs["json"]["sectionRegistrations"]
+    assert [(entry["SectionId"], entry["Credits"]) for entry in entries] == [
+        ("planned", 2.5), ("unplanned", 4.0)]
+
+
+@pytest.mark.parametrize("condition", ["valid", "wrong_account", "wrong_term", "duplicate", "out_of_range"])
+def test_variable_credit_payload_requires_a_matching_legal_plan_choice(degree_plan, tmp_path, condition):
+    plan = degree_plan["DegreePlan"]
+    term = plan["Terms"][0]
+    planned = term["PlannedCourses"][1]
+    planned["Credits"] = 2.5
+    if condition == "wrong_account":
+        plan["PersonId"] = "different-student"
+    elif condition == "wrong_term":
+        planned["TermCode"] = "2027SPW"
+    elif condition == "duplicate":
+        term["PlannedCourses"].append(dict(planned, Credits=3.0))
+    elif condition == "out_of_range":
+        planned["Credits"] = 5.0
+    api = KeanApiClient({}, "test-token", "fixture-student", DegreePlanRegistrationReader(), log_dir=tmp_path)
+    api.session.request = Mock(side_effect=[
+        response({"Id": "planned", "TermId": "2027SP", "MinimumCredits": 1, "MaximumCredits": 4}),
+        response(degree_plan), response([])])
+    api.check_section_status("planned")
+    api.verify_registration(["planned"])
+    api.register_multiple_sections(["planned"], action="Waitlist")
+    entry, = api.session.request.call_args.kwargs["json"]["sectionRegistrations"]
+    if condition == "valid":
+        assert entry["Credits"] == 2.5
+    else:
+        assert "Credits" not in entry

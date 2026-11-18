@@ -3,18 +3,70 @@
 Endpoint, query and fields observed on 2026-11-03. Fixtures contain invented
 identities and courses; no captured account response belongs in this repository.
 """
-from registration_state import RegistrationRecord, RegistrationSnapshot, SectionStatus as S
+from registration_state import (RegistrationRecord, RegistrationSnapshot, SectionStatus as S,
+                                section_credit_limits, valid_credits)
 
 class DegreePlanRegistrationReader:
-    def read(self, client, section_ids):
-        response = client._request(
-            "registration_read", "GET", f"{client.base_url}/Current", section_ids,
+    def _current(self, client, section_ids, session=None):
+        return client._request(
+            "registration_read" if session is None else "planned_credit_lookup",
+            "GET", f"{client.base_url}/Current", section_ids, session=session,
             params={"studentId": str(client.student_id)},
             headers={"Cache-Control": "no-cache"}, timeout=(1.5, 8))
+
+    def read(self, client, section_ids):
+        response = self._current(client, section_ids)
         if response.status_code != 200:
             return RegistrationSnapshot(reason=f"registration_http_{response.status_code}")
         return self.parse(response.json(), client.student_id, section_ids,
                           section_terms=client.section_terms, resolve_term=client.lookup_section_term)
+
+    def read_credits(self, client, section_ids, session):
+        response = self._current(client, section_ids, session)
+        if response.status_code != 200:
+            return {}
+        data = response.json()
+        plan = data.get("DegreePlan") if isinstance(data, dict) else None
+        if not isinstance(plan, dict) or str(plan.get("PersonId", "")) != str(client.student_id):
+            return {}
+        return self._planned_credits(plan.get("Terms"), set(section_ids))
+
+    @classmethod
+    def _planned_credits(cls, terms, wanted):
+        if not isinstance(terms, list):
+            return {}
+        found, duplicates = {}, set()
+        for term in terms:
+            if not isinstance(term, dict) or not isinstance(term.get("Code"), str) or not term["Code"]:
+                continue
+            courses = term.get("PlannedCourses")
+            if not isinstance(courses, list):
+                continue
+            for course in courses:
+                if not isinstance(course, dict) or course.get("TermCode") != term["Code"]:
+                    continue
+                section = course.get("Section")
+                if not isinstance(section, dict) or section.get("TermId") != term["Code"]:
+                    continue
+                sid = section.get("Id")
+                if not isinstance(sid, str) or sid not in wanted:
+                    continue
+                if cls._status(course) in (S.PLANNED, S.WAITLISTED):
+                    if sid in found:
+                        duplicates.add(sid)
+                    # Self-Service submits plannedCourse.Credits(). A fixed Section
+                    # also exposes its exact value through its credit limits.
+                    credits = course.get("Credits")
+                    limits = section_credit_limits(section)
+                    if limits is not None:
+                        minimum, maximum = limits
+                        if minimum == maximum:
+                            credits = minimum
+                        elif not valid_credits(credits) or not minimum <= credits <= maximum:
+                            credits = None
+                    found[sid] = credits
+        return {sid: credits for sid, credits in found.items()
+                if sid not in duplicates and valid_credits(credits)}
 
     def parse(self, data, student_id, section_ids, section_terms=None, resolve_term=None):
         """Absence is evidence only in a complete, matching account and term."""
@@ -70,7 +122,7 @@ class DegreePlanRegistrationReader:
                     if term_id:
                         reason = "incomplete_registration_term" if term_id in by_term else "registration_term_missing"
                     result[sid] = RegistrationRecord(S.UNKNOWN, term_id=term_id, reason=reason)
-        return RegistrationSnapshot(result, "account_records")
+        return RegistrationSnapshot(result, "account_records", self._planned_credits(terms, wanted))
 
     def _term_records(self, term):
         code = term["Code"]

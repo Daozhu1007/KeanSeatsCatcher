@@ -6,7 +6,7 @@ import pytest
 import requests
 
 from core_api import KeanApiClient, SessionExpiredError
-from registration_state import (RegistrationRecord, RegistrationSnapshot, SectionStatus as S,
+from registration_state import (RegistrationReader, RegistrationRecord, RegistrationSnapshot, SectionStatus as S,
                                 SessionStatus, SubmissionStatus)
 
 
@@ -28,7 +28,7 @@ def snapshot(**states):
 
 def client(tmp_path, replies, snapshots=None):
     # Initial submissions do not consume a personal-plan read.
-    reader = Mock()
+    reader = Mock(spec=RegistrationReader)
     remaining = iter(snapshots or [])
 
     def read(api, section_ids):
@@ -135,6 +135,51 @@ def test_positive_ack_and_completion_do_not_prove_registration(tmp_path):
     assert api.session.request.call_count == 2
     assert all("Credits" not in reg for reg in
                api.session.request.call_args_list[0].kwargs["json"]["sectionRegistrations"])
+    assert next(e for e in events(api) if e["event"] == "submission")["unresolved_credits"] == ["a"]
+
+
+@pytest.mark.parametrize("action", ["Add", "Waitlist"])
+def test_registration_payload_uses_fixed_credits_per_section(tmp_path, action):
+    fixed = {"one": 1.0, "three": 3.0, "four": 4.0, "half": 0.5, "zero": 0}
+    replies = [response({"Id": sid, "Available": 1, "MinimumCredits": credits,
+                         "MaximumCredits": credits if sid == "four" else None})
+               for sid, credits in fixed.items()]
+    api = client(tmp_path, [*replies, response([])])
+    assert all(api.check_section_status(sid) for sid in fixed)
+    assert api.register_multiple_sections(fixed, action=action, drop_section_id="old").status == (
+        SubmissionStatus.ACKNOWLEDGED)
+    call = api.session.request.call_args
+    assert call.args == ("POST", api.base_url + "/RegisterSections")
+    body = json.loads(requests.Request(*call.args, json=call.kwargs["json"]).prepare().body)
+    assert body["studentId"] == "fixture-student"
+    entries = body["sectionRegistrations"]
+    assert entries[0] == {"SectionId": "old", "Action": "Drop", "Credits": None,
+                          "DropReasonCode": None, "IntentToWithdrawId": None}
+    assert [(entry["SectionId"], entry["Action"], entry["Credits"]) for entry in entries[1:]] == [
+        (sid, action, credits) for sid, credits in fixed.items()]
+
+
+@pytest.mark.parametrize("details", [
+    {"Id": "different", "MinimumCredits": 4, "MaximumCredits": None},
+    {"Id": "a", "MinimumCredits": False, "MaximumCredits": None},
+    {"Id": "a", "MinimumCredits": float("nan"), "MaximumCredits": None},
+    {"Id": "a", "MinimumCredits": 1, "MaximumCredits": 4},
+    {"Id": "a", "MinimumCredits": 4},
+])
+def test_unknown_credits_preserve_initial_payload(tmp_path, details):
+    api = client(tmp_path, [response(details), response([])])
+    api.check_section_status("a")
+    api.register_multiple_sections(["a"])
+    entry, = api.session.request.call_args.kwargs["json"]["sectionRegistrations"]
+    assert "Credits" not in entry
+
+
+def test_credit_rejection_does_not_override_account_enrollment(tmp_path):
+    notice = error("one", "GE*3000*03 - This is not a variable credit course. Credits cannot be changed.")
+    api = client(tmp_path, [response([notice])], [snapshot(one=S.REGISTERED)])
+    assert api.execute_full_attack(["one"])[0]
+    assert next(e for e in events(api) if e["event"] == "submission")["rejections"] == {
+        "one": "credits_rejected"}
 
 
 @pytest.mark.parametrize("reply", [requests.ReadTimeout(), response(status=503),

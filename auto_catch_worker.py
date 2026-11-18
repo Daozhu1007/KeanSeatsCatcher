@@ -77,6 +77,7 @@ class AutoCatchWorker(QThread):
         self._stop_event.clear()
         self.api_engine._event("worker_started", worker="autocatch", section_ids=self.section_ids)
         round_count = 0
+        self.api_engine.prefetch_registration_credits(self.section_ids)
 
         while self.is_running:
             round_count += 1
