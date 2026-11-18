@@ -41,18 +41,21 @@ def degree_plan():
     }}
 
 
-def test_observed_contract_distinguishes_states_and_uses_explicit_term(degree_plan, tmp_path):
-    reader = DegreePlanRegistrationReader("2027SP")
+def test_observed_contract_distinguishes_states_and_resolves_missing_sections(degree_plan, tmp_path):
+    reader = DegreePlanRegistrationReader()
     api = KeanApiClient({}, "test-token", "fixture-student", reader, log_dir=tmp_path)
-    api.session.request = Mock(return_value=response(degree_plan))
+    api.session.request = Mock(side_effect=[response(degree_plan), response({"Id": "absent", "TermId": "2027SP"})])
     ids = ["registered", "planned", "waiting", "absent"]
     snapshot = api.verify_registration(ids)
     assert [snapshot.records[sid].status for sid in ids] == [S.REGISTERED, S.PLANNED, S.WAITLISTED, S.NOT_REGISTERED]
     assert api.pending_sections(ids) == ["planned", "absent"]
-    call = api.session.request.call_args
+    call, details = api.session.request.call_args_list
     assert call.args == ("GET", api.base_url + "/Current")
     assert call.kwargs["params"] == {"studentId": "fixture-student"}
     assert call.kwargs["allow_redirects"] is False
+    assert details.args[1].endswith("/SectionDetails")
+    assert details.kwargs["json"]["sectionId"] == "absent"
+    assert snapshot.records["absent"].term_id == "2027SP"
     assert all(record.server_registered_at is None for record in snapshot.records.values())
 
 
@@ -75,23 +78,30 @@ def test_incomplete_or_mismatched_records_cannot_authorize_absence(degree_plan, 
         del term["PlannedCourses"][0]["IsPreregistered"]
     else:
         term["PlannedCourses"][0]["IsPlanned"] = True
-    result = DegreePlanRegistrationReader().parse(degree_plan, "fixture-student", ["absent", "planned"])
-    assert "absent" not in result.records
+    result = DegreePlanRegistrationReader().parse(degree_plan, "fixture-student", ["absent", "planned"],
+                                                  section_terms={"absent": "2027SP"})
+    assert "absent" not in result.records or result.records["absent"].status == S.UNKNOWN
     assert "planned" not in result.records or result.records["planned"].status == S.UNKNOWN
 
 
-def test_section_in_another_term_is_unknown_not_an_add_target(degree_plan):
+def test_multiple_terms_use_exact_section_records_and_never_borrow_absence(degree_plan):
     other = copy.deepcopy(degree_plan["DegreePlan"]["Terms"][0])
     other.update(Code="2027SPW", PlannedCourses=[course("other-term", S.REGISTERED, "2027SPW")])
     degree_plan["DegreePlan"]["Terms"].append(other)
-    result = DegreePlanRegistrationReader().parse(degree_plan, "fixture-student", ["other-term"])
-    assert result.records["other-term"].status == S.UNKNOWN
+    result = DegreePlanRegistrationReader().parse(
+        degree_plan, "fixture-student", ["registered", "other-term", "unknown-scope", "term-not-loaded"],
+        section_terms={"term-not-loaded": "2026FA"})
+    assert result.records["registered"].term_id == "2027SP"
+    assert result.records["other-term"].status == S.REGISTERED
+    assert result.records["other-term"].term_id == "2027SPW"
+    assert result.records["unknown-scope"].status == S.UNKNOWN
+    assert result.records["term-not-loaded"].reason == "registration_term_missing"
 
 
-def test_existing_registration_is_found_before_first_add(degree_plan, tmp_path):
+def test_already_confirmed_registration_is_skipped_when_starting_ordinary_attack(degree_plan, tmp_path):
     api = KeanApiClient({}, "test-token", "fixture-student", DegreePlanRegistrationReader(), log_dir=tmp_path)
     api.session.request = Mock(return_value=response(degree_plan))
-    assert api.execute_full_attack(["registered"])[0]
+    assert api.execute_full_attack(["registered"], submission_ids=[])[0]
     assert api.execute_full_attack(["registered"])[0]
     assert api.session.request.call_count == 1
     assert api.session.request.call_args.args[0] == "GET"
@@ -102,5 +112,14 @@ def test_missing_reader_pauses_initial_add(tmp_path):
     api = KeanApiClient({}, "test-token", "fixture-student", log_dir=tmp_path)
     api.session.request = Mock(side_effect=AssertionError("No HTTP allowed"))
     assert not api.execute_full_attack(["unverified"])[0]
-    assert api.results["unverified"].awaiting_verification
+    assert api.results["unverified"].status == S.UNKNOWN
     api.session.request.assert_not_called()
+
+
+def test_dashboard_sends_before_reading_account_plan(degree_plan, tmp_path):
+    api = KeanApiClient({}, "test-token", "fixture-student", DegreePlanRegistrationReader(), log_dir=tmp_path)
+    api.session.request = Mock(side_effect=[response([{"Type": "Error", "Message": "Already registered"}]),
+                                           response(degree_plan)])
+    assert api.execute_full_attack(["registered"])[0]
+    assert [call.args[1].rsplit("/", 1)[-1] for call in api.session.request.call_args_list] == [
+        "RegisterSections", "Current"]

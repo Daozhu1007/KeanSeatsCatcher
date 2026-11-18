@@ -36,15 +36,13 @@ However:
 
 ## Dual-Engine Architecture
 
-**Registration reliability update (2026-11-03):** Results are tracked per Section;
-the account reader now uses the observed Ellucian `DegreePlans/Current` response.
-GUI and CLI verify the selected term before the first Add, skipping registered and
-waitlisted sections. Unknown results pause submission; Auto-Catch checks availability
-again before retrying. The default term is `2027SP` (Spring 2027); set the GUI's
-registration term or CLI `--term` explicitly for another term.
-Use `--verify-only` with the CLI to read states without starting registration.
-Add/Waitlist still omit credits; the official page supplies planned credits, and
-the omission remains unverified by a real submission.
+In v1.3.1, Authentication returns to browser sign-in and credential extraction.
+Enter Section IDs in Dashboard or Auto-Catch. Dashboard sends its first Add at
+the configured time, and Auto-Catch submits each eligible opening as it finds it.
+KeanWISE account records and Section details provide the term for each Section.
+KSC verifies each result, skips confirmed registrations and waitlists, and
+checks availability again before Auto-Catch retries an uncertain submission.
+Use `--verify-only` with the CLI to read registration states.
 See [verification behavior, evidence and remaining limits](docs/Registration-Verification.md).
 
 KSC ships with two independent engines sharing the same API core.
@@ -59,7 +57,7 @@ ui_main.py  →  PyQt6 + qfluentwidgets
 |---|---|
 | **Dashboard** | One-shot scheduled attack or continuous monitoring with countdown timer |
 | **Auto-Catch** | Background polling loop — detects open seats and attacks instantly |
-| **Session Auto-Recovery** | Detects 401 / login redirects in all workers; tries one same-account recovery and verifies it; stops if recovery cannot be confirmed |
+| **Session Auto-Recovery** | Detects HTTP 401, login responses and explicit credential rejection. Workers try one verified recovery for the same account. |
 | **Memory Safety** | Log widget capped at 1 000 lines; minimum 1 s polling interval to prevent CPU thrashing |
 | **Recovery Counter** | Status bar shows `Polling (Round #1245) \| Recoveries: 3...` for situational awareness |
 | **Waitlist Fallback** | Requires a scoped Closed rejection and a verified record showing the Section is not registered |
@@ -108,7 +106,7 @@ python ui_main.py
 
 Or download the pre-built packages from [Releases](../../releases):
 - `KeanSeatsCatcher_vX.X_Setup.exe` — full installer (Start Menu shortcuts, uninstaller)
-- `KeanSeatsCatcher-vX.X.zip` — portable, extract and run
+- `KeanSeatsCatcher_vX.Y.Z_Portable.zip` — portable, extract and run
 
 ### CLI (Windows / Local Test)
 

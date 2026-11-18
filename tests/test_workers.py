@@ -49,7 +49,7 @@ def test_workers_stop_cleanly_on_expiration_without_auth_manager(tmp_path, worke
 
 
 def test_dashboard_recovery_keeps_unknown_attempt_and_verifies_before_retry(tmp_path):
-    valid = '<a href="/Student/Account/Logout">Out</a><input name="__RequestVerificationToken">'
+    valid = '<a href="/Student/Account/Logout">Out</a><input name="__RequestVerificationToken" value="fixture">'
     api = client(tmp_path, [response(status=401), response(text=valid)], [snapshot(a=S.REGISTERED)])
     auth = Mock()
     auth.silent_relogin.return_value = {"cookies": {}, "verification_token": "new",
@@ -80,7 +80,7 @@ def test_recovery_cannot_mix_account_results(tmp_path):
 
 
 def test_repeated_expiration_does_not_loop_reauthentication(tmp_path):
-    valid = '<a href="/Student/Account/Logout">Out</a><input name="__RequestVerificationToken">'
+    valid = '<a href="/Student/Account/Logout">Out</a><input name="__RequestVerificationToken" value="fixture">'
     api = client(tmp_path, [response(status=401), response(text=valid)],
                  [__import__("core_api").SessionExpiredError("session_expired")])
     auth = Mock()
@@ -114,12 +114,14 @@ def test_stop_during_availability_does_not_send_add(tmp_path):
 
 
 @pytest.mark.parametrize("worker_class", [AutoCatchWorker, CloudWorker])
-def test_unknown_reconciliation_requires_a_new_seat_check_before_retry(tmp_path, worker_class):
+def test_unknown_reconciliation_requires_a_new_seat_check_before_retry(tmp_path, monkeypatch, worker_class):
+    clock = [0]
+    monkeypatch.setattr("core_api.time.monotonic", lambda: clock[0])
     api = client(tmp_path, [response({"Available": 1}), requests.ReadTimeout(),
                            response({"Available": 0}), response({"Available": 1}), requests.ReadTimeout()],
-                 [snapshot(), snapshot(a=S.NOT_REGISTERED), snapshot(a=S.REGISTERED)])
+                 [snapshot(a=S.NOT_REGISTERED), snapshot(a=S.NOT_REGISTERED), snapshot(a=S.REGISTERED)])
     worker = worker_class(api, ["a"], interval=1)
-    worker._sleep = lambda seconds: api._retry_after.clear()
+    worker._sleep = lambda seconds: clock.__setitem__(0, clock[0] + 5)
     worker.run()
     operations = [call.args[1].rsplit("/", 1)[-1] for call in api.session.request.call_args_list]
     assert operations == ["SectionDetails", "RegisterSections", "SectionDetails", "SectionDetails", "RegisterSections"]
@@ -127,11 +129,14 @@ def test_unknown_reconciliation_requires_a_new_seat_check_before_retry(tmp_path,
 
 
 @pytest.mark.parametrize("worker_class", [AutoCatchWorker, CloudWorker])
-def test_one_open_section_does_not_authorize_add_for_a_full_section(tmp_path, worker_class):
-    api = client(tmp_path, [response({"Available": 1}), response({"Available": 0}), requests.ReadTimeout()],
+def test_open_section_is_sent_without_waiting_to_check_the_next_section(tmp_path, worker_class):
+    api = client(tmp_path, [response({"Available": 1}), requests.ReadTimeout(), response({"Available": 0})],
                  [snapshot(a=S.REGISTERED, b=S.NOT_REGISTERED)])
     worker = worker_class(api, ["a", "b"], interval=1)
     worker._sleep = lambda seconds: setattr(worker, "is_running", False)
     worker.run()
-    registrations = api.session.request.call_args.kwargs["json"]["sectionRegistrations"]
+    operations = api.session.request.call_args_list
+    assert [call.args[1].rsplit("/", 1)[-1] for call in operations] == [
+        "SectionDetails", "RegisterSections", "SectionDetails"]
+    registrations = operations[1].kwargs["json"]["sectionRegistrations"]
     assert [item["SectionId"] for item in registrations] == ["a"]

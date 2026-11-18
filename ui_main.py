@@ -25,7 +25,7 @@ from i18n import i18n, load_config
 from core_auth import KeanAuthManager
 from core_api import KeanApiClient, SessionExpiredError
 from registration_state import SessionStatus
-from registration_reader import DegreePlanRegistrationReader, DEFAULT_TERM
+from registration_reader import DegreePlanRegistrationReader
 from worker_session import recover_session
 from ui_autocatch import AutoCatchInterface
 from ui_settings import SettingsInterface
@@ -173,11 +173,13 @@ class MonitorWorker(QThread):
                     self.is_running = False
                     break
                 else:
-                    delay = max(self.interval, self.api_engine.retry_delay)
-                    self.log_signal.emit(i18n.tr("msg_round_failed", attempt, msg, delay), "normal")
-                    if not self.api_engine.pending_sections(self.section_ids) and not self.api_engine.needs_verification(self.section_ids):
+                    pending = self.api_engine.pending_sections(self.section_ids)
+                    if not pending and not self.api_engine.needs_verification(self.section_ids):
                         self.is_running = False
                         break
+                    retry_delay = self.api_engine.retry_delay
+                    delay = max(self.interval, retry_delay) if pending else max(2, retry_delay)
+                    self.log_signal.emit(i18n.tr("msg_round_failed", attempt, msg, delay), "normal")
                     self._sleep(delay)
 
             except SessionExpiredError:
@@ -187,7 +189,7 @@ class MonitorWorker(QThread):
                     self.is_running = False
                     break
                 recovery_attempted = True
-                if not recover_session(self.api_engine, self.auth_manager):
+                if not recover_session(self.api_engine, self.auth_manager, section_ids=self.section_ids):
                     self.log_signal.emit(i18n.tr("log_session_stopped"), "error")
                     self.is_running = False
                     break
@@ -466,11 +468,6 @@ class AuthInterface(QWidget):
         info.setStyleSheet("color: #a0a0a0;")
         card_layout.addWidget(info)
 
-        card_layout.addWidget(BodyLabel(i18n.tr("auth_registration_term")))
-        self.term_input = LineEdit()
-        self.term_input.setText(DEFAULT_TERM)
-        card_layout.addWidget(self.term_input)
-
         self.btn_login = PushButton(FIF.GLOBE, i18n.tr("btn_launch_browser"))
         self.btn_extract = PushButton(FIF.DOWNLOAD, i18n.tr("btn_extract"))
         self.btn_extract.setEnabled(False)
@@ -504,10 +501,6 @@ class AuthInterface(QWidget):
             InfoBar.error(i18n.tr("msg_launch_failed"), i18n.tr("msg_browser_error", msg), duration=8000, parent=self)
 
     def handle_extract(self):
-        if not self.term_input.text().strip():
-            InfoBar.error(i18n.tr("msg_extract_failed"), i18n.tr("auth_term_required"),
-                          duration=5000, parent=self)
-            return
         credentials = self.auth_manager.extract_credentials()
         if "error" in credentials:
             InfoBar.error(i18n.tr("msg_extract_failed"), credentials["error"], duration=5000, parent=self)
@@ -519,7 +512,7 @@ class AuthInterface(QWidget):
             cookies_dict=credentials["cookies"],
             verification_token=credentials["verification_token"],
             student_id=student_id,
-            registration_reader=DegreePlanRegistrationReader(self.term_input.text())
+            registration_reader=DegreePlanRegistrationReader()
         )
 
         config = load_config()
@@ -529,7 +522,6 @@ class AuthInterface(QWidget):
         self.btn_extract.setText(i18n.tr("msg_engine_ready", student_id))
         self.btn_extract.setEnabled(False)
         self.btn_login.setEnabled(False)
-        self.term_input.setEnabled(False)
 
         self.engine_ready_signal.emit(api_engine)
         InfoBar.success(i18n.tr("msg_auth_success"), i18n.tr("msg_auth_success_detail", student_id),
@@ -573,7 +565,7 @@ class AboutInterface(ScrollArea):
         info_layout.setSpacing(5)
         name_lbl = SubtitleLabel("KeanSeatsCatcher")
         name_lbl.setStyleSheet("font-size: 22px; font-weight: bold;")
-        ver_lbl = BodyLabel("Version 1.3 Stable")
+        ver_lbl = BodyLabel("Version 1.3.1")
         ver_lbl.setStyleSheet("color: #a0a0a0;")
         info_layout.addWidget(name_lbl)
         info_layout.addWidget(ver_lbl)

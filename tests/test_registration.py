@@ -26,17 +26,12 @@ def snapshot(**states):
                                 reason="fixture_account_records")
 
 
-def client(tmp_path, replies, snapshots=None, initially_absent=True):
-    # Submission tests begin with a successful account preflight. Subsequent
-    # reads use the supplied evidence (or simulate a reader outage).
+def client(tmp_path, replies, snapshots=None):
+    # Initial submissions do not consume a personal-plan read.
     reader = Mock()
     remaining = iter(snapshots or [])
-    first_read = True
+
     def read(api, section_ids):
-        nonlocal first_read
-        if first_read and initially_absent:
-            first_read = False
-            return snapshot(**{sid: S.NOT_REGISTERED for sid in section_ids})
         if snapshots is None:
             return RegistrationSnapshot(reason="fixture_reader_unavailable")
         result = next(remaining)
@@ -70,10 +65,9 @@ def test_timeout_but_server_registered_and_never_add_again(tmp_path):
 
 def test_six_sections_partial_success_scoped_rejections_unknown_and_retry(tmp_path):
     notices = [error("1", "Already registered"), error("3", "Closed"), error("4", "Credits invalid")]
-    api = client(tmp_path, [response(notices), requests.ReadTimeout()], [
+    api = client(tmp_path, [response(notices), response([]), requests.ReadTimeout()], [
         snapshot(**{"1": S.REGISTERED, "2": S.REGISTERED, "3": S.NOT_REGISTERED,
                     "4": S.NOT_REGISTERED, "5": S.REGISTERED}),
-        snapshot(**{"3": S.NOT_REGISTERED, "4": S.NOT_REGISTERED}),
         snapshot(**{"3": S.REGISTERED, "4": S.NOT_REGISTERED}),
     ])
     ids = list("123456")
@@ -81,7 +75,7 @@ def test_six_sections_partial_success_scoped_rejections_unknown_and_retry(tmp_pa
     assert not success and all(sid in msg for sid in ids)
     assert [api.results[x].status for x in ids] == [S.REGISTERED, S.REGISTERED, S.REJECTED,
                                                    S.REJECTED, S.REGISTERED, S.UNKNOWN]
-    api._retry_after = {}
+    assert api.session.request.call_args.args[1].endswith("/CompleteRegistration")
     api.execute_full_attack(ids)
     sent = api.session.request.call_args.kwargs["json"]["sectionRegistrations"]
     assert [x["SectionId"] for x in sent] == ["3", "4"]
@@ -114,8 +108,7 @@ def test_closed_uses_account_record_to_distinguish_enrollment(tmp_path, register
     assert api.results["a"].status == expected
 
 
-@pytest.mark.parametrize("reply", [requests.ReadTimeout(), requests.ConnectTimeout(),
-                                   requests.ConnectionError(), response(status=503),
+@pytest.mark.parametrize("reply", [requests.ReadTimeout(), requests.ConnectionError(), response(status=503),
                                    response(text="<html>Temporarily unavailable; login later</html>")])
 def test_unknown_submission_and_unavailable_reader_prevent_repeated_add(tmp_path, reply):
     api = client(tmp_path, [reply])
@@ -124,6 +117,15 @@ def test_unknown_submission_and_unavailable_reader_prevent_repeated_add(tmp_path
     assert api.session.request.call_count == 1
     assert api.results["a"].status == S.UNKNOWN
     assert api.retry_delay == 30
+
+
+def test_connect_timeout_can_retry_without_a_working_reader(tmp_path):
+    api = client(tmp_path, [requests.ConnectTimeout(), requests.ReadTimeout()], [snapshot(a=S.REGISTERED)])
+    assert not api.execute_full_attack(["a"])[0]
+    api.registration_reader.read.assert_not_called()
+    assert not api.results["a"].awaiting_verification and api.retry_delay == 2
+    assert api.execute_full_attack(["a"])[0]
+    assert api.session.request.call_count == 2
 
 
 def test_positive_ack_and_completion_do_not_prove_registration(tmp_path):
@@ -154,6 +156,7 @@ def test_complete_timeout_can_only_succeed_with_independent_records(tmp_path):
 
 @pytest.mark.parametrize("reply", [response(status=401),
                                    response(status=302, location="/Student/Account/Login?ReturnUrl=DegreePlans"),
+                                   response({"InvalidSession": "true"}),
                                    response(text='<form><input type="password"></form>')])
 @pytest.mark.parametrize("operation", ["register", "complete", "availability"])
 def test_expired_session_propagates_everywhere(tmp_path, reply, operation):
@@ -174,6 +177,8 @@ def test_expired_session_propagates_everywhere(tmp_path, reply, operation):
                    '<input name="__RequestVerificationToken" value="TOKEN_SECRET">'), SessionStatus.VALID),
     (response(status=302, location="/Student/Account/Login"), SessionStatus.EXPIRED),
     (response(status=401), SessionStatus.EXPIRED),
+    (response({"InvalidSession": "true"}), SessionStatus.EXPIRED),
+    (response("Could not validate this request's antiforgery token.", status=400), SessionStatus.EXPIRED),
     (response(text='<input type="password">'), SessionStatus.EXPIRED),
     (response(status=403), SessionStatus.UNKNOWN),
     (response(status=429), SessionStatus.UNKNOWN),
@@ -200,21 +205,29 @@ def test_failed_read_preserves_confirmed_and_leaves_others_unknown(tmp_path):
     assert api.session.request.call_count == 1
 
 
-def test_negative_record_immediately_after_send_does_not_replay(tmp_path):
-    api = client(tmp_path, [requests.ReadTimeout()], [snapshot(a=S.NOT_REGISTERED)] * 2)
-    api.execute_full_attack(["a"])
-    api.execute_full_attack(["a"])
-    assert api.session.request.call_count == 1
-    assert api.results["a"].awaiting_verification
+def test_retry_requires_two_negative_reads_and_grace_after_completion(tmp_path, monkeypatch):
+    clock = [0]
+    monkeypatch.setattr("core_api.time.monotonic", lambda: clock[0])
 
+    api = client(tmp_path, [], [snapshot(a=S.NOT_REGISTERED)] * 3 + [snapshot(a=S.REGISTERED)])
 
-def test_retry_grace_starts_after_a_long_timeout(tmp_path, monkeypatch):
-    clock = iter([0, 12, 12])
-    monkeypatch.setattr("core_api.time.monotonic", lambda: next(clock))
-    api = client(tmp_path, [requests.ReadTimeout()], [snapshot(a=S.NOT_REGISTERED)])
+    def submit(method, url, **kwargs):
+        if url.endswith("/CompleteRegistration"):
+            clock[0] = 12
+        elif clock[0] == 0:
+            return response([])
+        raise requests.ReadTimeout()
+
+    api.session.request.side_effect = submit
     api.execute_full_attack(["a"])
+    clock[0] = 16
+    api.execute_full_attack(["a"])
+    assert api.session.request.call_count == 2
     assert api.results["a"].awaiting_verification
     assert api._retry_after["a"] == 17
+    clock[0] = 17
+    assert api.execute_full_attack(["a"])[0]
+    assert api.session.request.call_count == 3
 
 
 @pytest.mark.parametrize("invalid", [None, {}, RegistrationSnapshot({"a": {"status": "REGISTERED"}})])
@@ -227,10 +240,9 @@ def test_malformed_reader_output_stays_unknown(tmp_path, invalid):
 
 def test_waitlist_requires_scoped_closed_and_verified_absence(tmp_path):
     api = client(tmp_path, [response([error("a", "Closed")]), response([]), response([])],
-                 [snapshot(a=S.NOT_REGISTERED), snapshot(a=S.NOT_REGISTERED), snapshot(a=S.WAITLISTED)])
+                 [snapshot(a=S.NOT_REGISTERED), snapshot(a=S.WAITLISTED)])
     api.execute_full_attack(["a"], enable_waitlist=True)
     assert api.session.request.call_count == 1
-    api._retry_after = {}
     assert not api.execute_full_attack(["a"], enable_waitlist=True)[0]
     assert api.session.request.call_args_list[1].kwargs["json"]["sectionRegistrations"][0]["Action"] == "Waitlist"
     assert api.results["a"].status == S.WAITLISTED
@@ -239,7 +251,8 @@ def test_waitlist_requires_scoped_closed_and_verified_absence(tmp_path):
 
 
 def test_uncertain_swap_does_not_replay_drop_or_report_success(tmp_path):
-    api = client(tmp_path, [requests.ReadTimeout()], [snapshot(a=S.REGISTERED), snapshot(a=S.REGISTERED)])
+    api = client(tmp_path, [requests.ReadTimeout()],
+                 [snapshot(a=S.NOT_REGISTERED, old=S.REGISTERED), snapshot(a=S.REGISTERED), snapshot(a=S.REGISTERED)])
     assert not api.execute_full_attack(["a"], drop_section_id="old")[0]
     assert not api.execute_full_attack(["a"], drop_section_id="old")[0]
     assert api.session.request.call_count == 1
@@ -293,8 +306,9 @@ def test_response_timestamp_and_malformed_notifications_are_not_success(tmp_path
 
 
 def test_explicit_expiration_rolls_back_attempt_then_rechecks_after_relogin(tmp_path):
-    api = client(tmp_path, [response(status=401), requests.ReadTimeout()],
-                 [snapshot(a=S.NOT_REGISTERED), snapshot(a=S.REGISTERED, old=S.NOT_REGISTERED)])
+    before = snapshot(a=S.NOT_REGISTERED, old=S.REGISTERED)
+    api = client(tmp_path, [response({"InvalidSession": "true"}), requests.ReadTimeout()],
+                 [before, before, snapshot(a=S.REGISTERED, old=S.NOT_REGISTERED)])
     with pytest.raises(SessionExpiredError):
         api.execute_full_attack(["a"], drop_section_id="old")
     assert not api.results["a"].awaiting_verification
@@ -306,7 +320,8 @@ def test_explicit_expiration_rolls_back_attempt_then_rechecks_after_relogin(tmp_
 
 
 def test_expired_completion_does_not_erase_an_accepted_add(tmp_path):
-    api = client(tmp_path, [response([]), response(status=401)])
+    api = client(tmp_path, [response([]), response(status=401)],
+                 [snapshot(a=S.NOT_REGISTERED, old=S.REGISTERED)])
     with pytest.raises(SessionExpiredError):
         api.execute_full_attack(["a"], drop_section_id="old")
     assert api.results["a"].attempted and api.results["a"].awaiting_verification

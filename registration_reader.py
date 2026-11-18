@@ -5,25 +5,18 @@ identities and courses; no captured account response belongs in this repository.
 """
 from registration_state import RegistrationRecord, RegistrationSnapshot, SectionStatus as S
 
-DEFAULT_TERM = "2027SP"
-
-
 class DegreePlanRegistrationReader:
-    def __init__(self, term_code=DEFAULT_TERM):
-        self.term_code = term_code.strip()
-        if not self.term_code:
-            raise ValueError("A registration term is required")
-
     def read(self, client, section_ids):
         response = client._request(
             "registration_read", "GET", f"{client.base_url}/Current", section_ids,
             params={"studentId": str(client.student_id)},
-            headers={"Cache-Control": "no-cache"}, timeout=(1.5, 12))
+            headers={"Cache-Control": "no-cache"}, timeout=(1.5, 8))
         if response.status_code != 200:
             return RegistrationSnapshot(reason=f"registration_http_{response.status_code}")
-        return self.parse(response.json(), client.student_id, section_ids)
+        return self.parse(response.json(), client.student_id, section_ids,
+                          section_terms=client.section_terms, resolve_term=client.lookup_section_term)
 
-    def parse(self, data, student_id, section_ids):
+    def parse(self, data, student_id, section_ids, section_terms=None, resolve_term=None):
         """Absence is evidence only in a complete, matching account and term."""
         if not isinstance(data, dict) or not isinstance(data.get("DegreePlan"), dict):
             return RegistrationSnapshot(reason="invalid_degree_plan")
@@ -33,19 +26,62 @@ class DegreePlanRegistrationReader:
         terms = plan.get("Terms")
         if not isinstance(terms, list) or any(not isinstance(t, dict) for t in terms):
             return RegistrationSnapshot(reason="invalid_registration_terms")
-        matches = [t for t in terms if t.get("Code") == self.term_code]
-        if len(matches) != 1:
-            return RegistrationSnapshot(reason="registration_term_missing")
-        term = matches[0]
+        by_term = {}
+        for term in terms:
+            code = term.get("Code")
+            if not isinstance(code, str) or not code:
+                return RegistrationSnapshot(reason="invalid_registration_terms")
+            by_term.setdefault(code, []).append(term)
+
+        matches = {}
+        complete_terms = set()
+        wanted = set(section_ids)
+        for code, entries in by_term.items():
+            for term in entries:
+                records, complete = self._term_records(term)
+                if complete and len(entries) == 1 and plan.get("Notifications") == []:
+                    complete_terms.add(code)
+                for sid in wanted.intersection(records):
+                    status = records[sid] if len(entries) == 1 else S.UNKNOWN
+                    matches.setdefault(sid, []).append((code, status))
+
+        result = {}
+        for sid in section_ids:
+            course_matches = matches.get(sid, [])
+            term_id = (section_terms or {}).get(sid)
+            if len(course_matches) == 1 and (not term_id or term_id == course_matches[0][0]):
+                code, status = course_matches[0]
+                if status in (S.NOT_REGISTERED, S.PLANNED) and code not in complete_terms:
+                    result[sid] = RegistrationRecord(S.UNKNOWN, term_id=code,
+                                                     reason="incomplete_registration_term")
+                else:
+                    result[sid] = RegistrationRecord(status, term_id=code,
+                                                     reason="conflicting_section_records" if status == S.UNKNOWN else "")
+            elif course_matches:
+                result[sid] = RegistrationRecord(S.UNKNOWN, reason="conflicting_section_records")
+            else:
+                # With no matching row, only SectionDetails can prove which term to check.
+                if not term_id and complete_terms and resolve_term:
+                    term_id = resolve_term(sid)
+                if term_id in complete_terms:
+                    result[sid] = RegistrationRecord(S.NOT_REGISTERED, term_id=term_id)
+                else:
+                    reason = "section_term_unresolved"
+                    if term_id:
+                        reason = "incomplete_registration_term" if term_id in by_term else "registration_term_missing"
+                    result[sid] = RegistrationRecord(S.UNKNOWN, term_id=term_id, reason=reason)
+        return RegistrationSnapshot(result, "account_records")
+
+    def _term_records(self, term):
+        code = term["Code"]
         courses, active = term.get("PlannedCourses"), term.get("ActiveSectionIds")
-        if not isinstance(courses, list) or not isinstance(active, list):
-            return RegistrationSnapshot(reason="incomplete_registration_term")
-        complete = (plan.get("Notifications") == []
-                    and term.get("IsAcademicHistoryAvailable") is True
+        if not isinstance(courses, list):
+            return {}, False
+        complete = (term.get("IsAcademicHistoryAvailable") is True
                     and term.get("IsTermCompleted") is False)
         records = {}
         for course in courses:
-            if not isinstance(course, dict) or course.get("TermCode") != self.term_code:
+            if not isinstance(course, dict):
                 complete = False
                 continue
             section = course.get("Section")
@@ -55,7 +91,8 @@ class DegreePlanRegistrationReader:
                 section = history_section
             if section is None:
                 # A course-only plan is not evidence for any particular Section.
-                if course.get("HasSection") is not False or self._status(course) != S.PLANNED:
+                if (course.get("TermCode") != code or course.get("HasSection") is not False
+                        or self._status(course) != S.PLANNED):
                     complete = False
                 continue
             if (not isinstance(section, dict) or not isinstance(section.get("Id"), str)
@@ -64,43 +101,22 @@ class DegreePlanRegistrationReader:
                 continue
             sid = section["Id"]
             status = self._status(course)
-            if section.get("TermId") != self.term_code:
+            if course.get("TermCode") != code or section.get("TermId") != code:
                 status = S.UNKNOWN
             if history_section is not None and (
                     not isinstance(history_section, dict)
                     or history_section.get("Id") != sid
-                    or history_section.get("TermId") != self.term_code):
+                    or history_section.get("TermId") != code):
+                if isinstance(history_section, dict) and isinstance(history_section.get("Id"), str):
+                    records[history_section["Id"]] = S.UNKNOWN
                 status = S.UNKNOWN
-            if sid in records and records[sid].status != status:
+            if sid in records and records[sid] != status:
                 status = S.UNKNOWN
-            records[sid] = RegistrationRecord(status)
+            records[sid] = status
             complete &= status != S.UNKNOWN
         # The page's active section index must not reference missing records.
-        if any(not isinstance(sid, str) or sid not in records for sid in active):
-            complete = False
-        outside_term = set()
-        for other in terms:
-            if other is term:
-                continue
-            for course in other.get("PlannedCourses", []) or []:
-                if isinstance(course, dict):
-                    history = course.get("AcademicHistory") or {}
-                    for section in (course.get("Section"), history.get("Section") if isinstance(history, dict) else None):
-                        if isinstance(section, dict) and isinstance(section.get("Id"), str):
-                            outside_term.add(section["Id"])
-        result = {}
-        for sid in section_ids:
-            if sid in outside_term:
-                result[sid] = RegistrationRecord(S.UNKNOWN)
-            elif sid in records:
-                record = records[sid]
-                # Failed academic-history loading can make a registration look
-                # like a plan. Partial data must not authorize an Add.
-                result[sid] = (RegistrationRecord(S.UNKNOWN) if not complete and
-                               record.status in (S.PLANNED, S.NOT_REGISTERED) else record)
-            elif complete:
-                result[sid] = RegistrationRecord(S.NOT_REGISTERED)
-        return RegistrationSnapshot(result, "account_term_records" if complete else "incomplete_registration_term")
+        return records, (complete and isinstance(active, list)
+                         and all(isinstance(sid, str) and sid in records for sid in active))
 
     @staticmethod
     def _status(course):

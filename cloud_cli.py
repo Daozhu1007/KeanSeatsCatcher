@@ -13,9 +13,9 @@ import logging
 import signal
 import sys
 
-from core_api import KeanApiClient
+from core_api import KeanApiClient, SessionExpiredError
 from cloud_worker import CloudWorker
-from registration_reader import DegreePlanRegistrationReader, DEFAULT_TERM
+from registration_reader import DegreePlanRegistrationReader
 
 
 def setup_logging():
@@ -46,8 +46,8 @@ def parse_args():
     parser.add_argument(
         '--sections', required=True,
         help='Target section IDs, comma-separated (e.g. 26012,26686)')
-    parser.add_argument('--term', default=DEFAULT_TERM,
-                        help=f'Registration term code (default: {DEFAULT_TERM}, Spring 2027)')
+    # Accept older invocations. Verification always resolves the actual Section term.
+    parser.add_argument('--term', help=argparse.SUPPRESS)
     parser.add_argument('--verify-only', action='store_true',
                         help='Read account registration states and exit without submitting anything')
     parser.add_argument(
@@ -99,7 +99,7 @@ def load_session_from_file(filepath, logger):
     return data
 
 
-def authenticate(logger, headless: bool, session_file: str = None, term_code=DEFAULT_TERM):
+def authenticate(logger, headless: bool, session_file: str = None):
     """
     Authenticate and return a (KeanApiClient, KeanAuthManager) tuple.
 
@@ -121,7 +121,7 @@ def authenticate(logger, headless: bool, session_file: str = None, term_code=DEF
             cookies_dict=creds["cookies"],
             verification_token=creds["verification_token"],
             student_id=creds["student_id"],
-            registration_reader=DegreePlanRegistrationReader(term_code))
+            registration_reader=DegreePlanRegistrationReader())
         return engine, None
 
     from core_auth import KeanAuthManager  # lazy import — requires selenium
@@ -158,7 +158,7 @@ def authenticate(logger, headless: bool, session_file: str = None, term_code=DEF
         cookies_dict=creds["cookies"],
         verification_token=creds["verification_token"],
         student_id=creds["student_id"],
-        registration_reader=DegreePlanRegistrationReader(term_code))
+        registration_reader=DegreePlanRegistrationReader())
     return engine, auth
 
 
@@ -176,7 +176,6 @@ def main():
     logger.info("=" * 56)
     logger.info("KSC Cloud Phantom — 24/7 Auto-Catch Daemon")
     logger.info("Sections : %s", section_ids)
-    logger.info("Term     : %s", args.term)
     logger.info("Interval : %ds (min 1s enforced)", args.interval)
     logger.info("Waitlist : %s", "ON" if args.waitlist else "OFF")
     if args.load_session:
@@ -189,7 +188,7 @@ def main():
         logger.info("Drop Sec : %s", args.drop_section)
     logger.info("=" * 56)
 
-    engine, auth = authenticate(logger, headless, session_file=args.load_session, term_code=args.term)
+    engine, auth = authenticate(logger, headless, session_file=args.load_session)
     if engine is None:
         logger.error("Authentication failed. Exiting.")
         sys.exit(1)
@@ -198,6 +197,9 @@ def main():
         try:
             engine.execute_full_attack(section_ids, submission_ids=[])
             logger.info("Read-only verification: %s", engine.result_message(section_ids))
+        except SessionExpiredError:
+            logger.error("Session expired or credentials were rejected. Sign in again to verify registration.")
+            sys.exit(1)
         finally:
             if auth is not None:
                 auth.close_browser()

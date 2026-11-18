@@ -24,9 +24,8 @@ def test_cli_authentication_paths_enable_scoped_reader(tmp_path, monkeypatch, ro
     session = tmp_path / "fixture-session.json"
     session.write_text(json.dumps(CREDENTIALS), encoding="utf-8")
     api, _ = cloud_cli.authenticate(Mock(), route != "visible",
-                                   str(session) if route == "session_file" else None, "2027SPW")
+                                   str(session) if route == "session_file" else None)
     assert isinstance(api.registration_reader, DegreePlanRegistrationReader)
-    assert api.registration_reader.term_code == "2027SPW"
 
 
 def test_gui_extraction_enables_scoped_reader(tmp_path, monkeypatch):
@@ -36,18 +35,16 @@ def test_gui_extraction_enables_scoped_reader(tmp_path, monkeypatch):
     widget.auth_manager = Mock()
     widget.auth_manager.extract_credentials.return_value = CREDENTIALS
     monkeypatch.setattr(ui_main.InfoBar, "success", Mock())
-    widget.term_input.setText("2027SPW")
     engines = []
     widget.engine_ready_signal.connect(engines.append)
     widget.handle_extract()
     assert isinstance(engines[0].registration_reader, DegreePlanRegistrationReader)
-    assert engines[0].registration_reader.term_code == "2027SPW"
-    assert not widget.term_input.isEnabled()
+    assert not widget.findChildren(ui_main.LineEdit)
     widget.close()
 
 
 def test_cli_verify_only_never_starts_a_registration_worker(tmp_path, monkeypatch):
-    api = client(tmp_path, [], [snapshot(a=S.REGISTERED)], initially_absent=False)
+    api = client(tmp_path, [], [snapshot(a=S.REGISTERED)])
     monkeypatch.setattr(cloud_cli, "authenticate", lambda *args, **kwargs: (api, None))
     monkeypatch.setattr(cloud_cli, "setup_logging", Mock())
     monkeypatch.setattr(cloud_cli, "CloudWorker", lambda *args, **kwargs: pytest.fail("Worker must not start"))

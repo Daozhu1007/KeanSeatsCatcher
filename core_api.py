@@ -15,6 +15,7 @@ from registration_state import (RegistrationRecord, RegistrationSnapshot, Sectio
                                 SubmissionStatus)
 
 WAITLIST_ACTION = "Waitlist"
+REGISTRATION_GRACE_SECONDS = 5
 
 
 class SessionExpiredError(Exception):
@@ -31,11 +32,15 @@ class _PageEvidence(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == "input":
-            self.login |= attrs.get("type", "").lower() == "password"
-            self.login |= attrs.get("name", "").lower() in ("samlrequest", "wresult")
-            self.token |= attrs.get("name", "").lower() == "__requestverificationtoken"
+            name = (attrs.get("name") or "").lower()
+            self.login |= (attrs.get("type") or "").lower() == "password"
+            self.login |= name in ("samlrequest", "wresult")
+            self.token |= name == "__requestverificationtoken" and bool(attrs.get("value"))
         if tag in ("a", "form"):
-            path = urlparse(attrs.get("href", attrs.get("action", ""))).path.lower()
+            try:
+                path = urlparse(attrs.get("href") or attrs.get("action") or "").path.lower()
+            except ValueError:
+                return
             self.logout |= path.endswith(("/logout", "/logoff"))
 
 
@@ -56,12 +61,14 @@ class KeanApiClient:
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0",
         })
         self.registration_reader = registration_reader
+        self.section_terms = {}
         self.results = {}
         self.events = EventLog(log_dir)
         self.round_id = 0
         self.retry_delay = 0
         self._unknown_rounds = 0
         self._retry_after = {}
+        self._negative_reads = set()
         self._drop_pending = set()
         self._drop_attempted = set()
         self._log_error_reported = False
@@ -86,21 +93,41 @@ class KeanApiClient:
 
     @staticmethod
     def _login_url(url):
-        parsed = urlparse(url)
+        if not url:
+            return False
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            return False
         return (bool(re.search(r"/(login|signin|sign-in|sso|saml)(/|$)", parsed.path, re.I))
-                or "okta" in (parsed.hostname or "").lower())
+                or (parsed.hostname or "").lower().endswith((".okta.com", ".okta-emea.com")))
 
     def _check_expired(self, resp):
         if resp.status_code == 401:
             raise SessionExpiredError("http_401")
-        if self._login_url(resp.headers.get("Location", "")) or self._login_url(resp.url):
+        if 300 <= resp.status_code < 400 and self._login_url(resp.headers.get("Location")):
             raise SessionExpiredError("login_redirect")
-        # An outage page mentioning 'login' is not evidence of expiration.
-        if resp.status_code == 200 and resp.text.lstrip().startswith("<"):
-            page = _PageEvidence()
-            page.feed(resp.text)
-            if page.login:
-                raise SessionExpiredError("login_page")
+        if resp.status_code == 200:
+            if resp.content.lstrip().startswith(b"<"):
+                page = _PageEvidence()
+                page.feed(resp.text)
+                if page.login and not (page.logout and page.token):
+                    raise SessionExpiredError("login_page")
+            elif b'"InvalidSession"' in resp.content:
+                try:
+                    data = resp.json()
+                except ValueError:
+                    return
+                if isinstance(data, dict) and data.get("InvalidSession") in (True, "true"):
+                    raise SessionExpiredError("invalid_session_response")
+        elif resp.status_code == 400 and b"antiforgery token" in resp.content:
+            # Self-Service explicitly rejected the token before processing the action.
+            try:
+                data = resp.json()
+            except ValueError:
+                return
+            if data == "Could not validate this request's antiforgery token.":
+                raise SessionExpiredError("invalid_verification_token")
 
     def _request(self, operation, method, url, section_ids=(), **kwargs):
         """All traffic, including future read-only adapters, is audited here."""
@@ -117,8 +144,10 @@ class KeanApiClient:
             self._check_expired(resp)
             reason = "response_received"
             return resp
-        except SessionExpiredError:
+        except SessionExpiredError as exc:
             reason = "session_expired"
+            self._event("session_rejected", request_id=request_id, operation=operation,
+                        reason=str(exc))
             raise
         except requests.exceptions.RequestException as exc:
             reason = type(exc).__name__
@@ -133,7 +162,8 @@ class KeanApiClient:
         start = time.perf_counter()
         status, reason = SessionStatus.UNKNOWN, "unrecognized_authenticated_page"
         try:
-            resp = self._request("session_check", "GET", self.base_url, timeout=(1.5, 8))
+            resp = self._request("session_check", "GET", self.base_url,
+                                 headers={"Cache-Control": "no-cache"}, timeout=(1.5, 8))
             if resp.status_code == 200:
                 page = _PageEvidence()
                 page.feed(resp.text)
@@ -141,8 +171,8 @@ class KeanApiClient:
                     status, reason = SessionStatus.VALID, "authenticated_page"
             else:
                 reason = f"http_{resp.status_code}"
-        except SessionExpiredError:
-            status, reason = SessionStatus.EXPIRED, "session_expired"
+        except SessionExpiredError as exc:
+            status, reason = SessionStatus.EXPIRED, str(exc)
         except requests.exceptions.RequestException as exc:
             reason = type(exc).__name__
         result = SessionCheck(status, int((time.perf_counter() - start) * 1000), reason)
@@ -153,28 +183,71 @@ class KeanApiClient:
         """Compatibility alias; returns a tri-state SessionCheck, not a ping."""
         return self.check_session()
 
-    def check_section_status(self, section_id, enable_waitlist=False):
+    def _section_details(self, section_id, operation, timeout):
         root = "/".join(self.base_url.split("/")[:3])
+        sid = str(section_id)
+        resp = self._request(operation, "POST", f"{root}/Student/Student/Courses/SectionDetails",
+                             [sid], json={"sectionId": sid, "studentId": str(self.student_id)},
+                             timeout=timeout)
+        if resp.status_code != 200:
+            self._log(i18n.tr("log_section_check_http", sid, resp.status_code), "normal")
+            return None
+        data = resp.json()
+        if not isinstance(data, dict):
+            return None
+        returned_id = data.get("Id")
+        if returned_id is not None and str(returned_id) != sid:
+            return None
+        term = data.get("TermId")
+        if returned_id is not None and isinstance(term, str) and term.strip():
+            self.section_terms[sid] = term
+        return data
+
+    def lookup_section_term(self, section_id):
+        if section_id not in self.section_terms:
+            try:
+                self._section_details(section_id, "section_term_lookup", (1.5, 3))
+            except (requests.exceptions.RequestException, SessionExpiredError, ValueError):
+                # Keep any positive account records from this same reconciliation.
+                # The next authenticated request can handle a session rejection.
+                return None
+        return self.section_terms.get(section_id)
+
+    def check_section_status(self, section_id, enable_waitlist=False):
         try:
-            resp = self._request("section_availability", "POST",
-                                 f"{root}/Student/Student/Courses/SectionDetails",
-                                 [section_id], json={"sectionId": str(section_id),
-                                 "studentId": str(self.student_id)}, timeout=(1.5, 8))
-            if resp.status_code != 200:
-                return False
-            data = resp.json()
-            if not isinstance(data, dict):
+            data = self._section_details(section_id, "section_availability", (1.5, 8))
+            if data is None:
                 return False
             available = data.get("Available")
+            enrolled, capacity = data.get("Enrolled", "?"), data.get("Capacity", "?")
             waitlisted, maximum = data.get("Waitlisted"), data.get("WaitlistMaximum")
             has_seat = isinstance(available, (int, float)) and available > 0
             has_waitlist = (enable_waitlist and isinstance(waitlisted, (int, float))
-                            and isinstance(maximum, (int, float)) and waitlisted < maximum)
+                            and isinstance(maximum, (int, float)) and waitlisted < maximum
+                            and data.get("AllowWaitlist") is not False)
             self._event("availability", section_id=str(section_id),
-                        has_seat=has_seat, has_waitlist=bool(has_waitlist))
+                        has_seat=has_seat, has_waitlist=bool(has_waitlist), term_id=self.section_terms.get(str(section_id)))
+            if has_seat:
+                self._log(i18n.tr("log_section_open", section_id, available, enrolled, capacity), "success")
+            elif has_waitlist:
+                self._log(i18n.tr("log_section_waitlist_open", section_id, waitlisted, maximum))
+            elif isinstance(available, (int, float)):
+                self._log(i18n.tr("log_section_full", section_id, enrolled, capacity))
             return bool(has_seat or has_waitlist)
-        except (requests.exceptions.RequestException, ValueError):
+        except requests.exceptions.Timeout:
+            self._log(i18n.tr("log_section_check_timeout", section_id))
             return False
+        except (requests.exceptions.RequestException, ValueError) as exc:
+            self._log(i18n.tr("log_section_check_error", section_id, type(exc).__name__))
+            return False
+
+    def poll_available_sections(self, section_ids, enable_waitlist, running):
+        for sid in section_ids:
+            if not running() or self._drop_pending:
+                break
+            if (self.pending_sections([sid]) and self.check_section_status(sid, enable_waitlist=enable_waitlist)
+                    and running()):
+                yield sid
 
     @staticmethod
     def _is_duplicate_registration_msg(msg):
@@ -219,8 +292,9 @@ class KeanApiClient:
                 rejections[sid] = reason
         status = (SubmissionStatus.REJECTED if len(rejections) == len(section_ids) and section_ids
                   else SubmissionStatus.UNKNOWN if has_errors else SubmissionStatus.ACKNOWLEDGED)
+        should_complete = any(sid not in rejections and sid not in duplicates for sid in section_ids)
         return SubmissionResult(status, "notifications" if has_errors else "acknowledged",
-                                rejections, duplicates)
+                                rejections, duplicates, should_complete=should_complete)
 
     def _submission_response(self, resp, section_ids):
         if resp.status_code != 200:
@@ -229,7 +303,7 @@ class KeanApiClient:
             data = resp.json()
         except ValueError:
             return SubmissionResult(SubmissionStatus.UNKNOWN, "non_json_response")
-        items = data if isinstance(data, list) else data.get("notifications") if isinstance(data, dict) else None
+        items = data.get("notifications", data.get("Notifications")) if isinstance(data, dict) else data
         return self._parse_notifications(items, section_ids)
 
     def register_multiple_sections(self, section_ids, action="Add", drop_section_id=None):
@@ -237,15 +311,13 @@ class KeanApiClient:
         if not section_ids:
             return SubmissionResult(SubmissionStatus.UNKNOWN, "nothing_to_submit")
         previous = {sid: replace(self.results[sid]) for sid in section_ids}
-        previous_retry = self._retry_after.copy()
-        previous_drop_pending = self._drop_pending.copy()
-        previous_drop_attempted = self._drop_attempted.copy()
         registrations = []
         if drop_section_id:
-            registrations.append({"SectionId": str(drop_section_id), "Action": "Drop",
+            drop_section_id = str(drop_section_id)
+            registrations.append({"SectionId": drop_section_id, "Action": "Drop",
                                   "Credits": None, "DropReasonCode": None, "IntentToWithdrawId": None})
-            self._drop_pending.add(str(drop_section_id))
-            self._drop_attempted.add(str(drop_section_id))
+            self._drop_pending.add(drop_section_id)
+            self._drop_attempted.add(drop_section_id)
         # Do not override fixed credits. Omission needs real webpage validation;
         # variable-credit selection remains unsupported.
         registrations.extend({"SectionId": sid, "Action": action,
@@ -255,54 +327,61 @@ class KeanApiClient:
             result = self.results[sid]
             result.attempted = result.awaiting_verification = True
             result.status, result.reason, result.rejection = SectionStatus.UNKNOWN, "request_sent", ""
-            self._retry_after[sid] = time.monotonic() + 5
+            self._negative_reads.discard(sid)
         try:
             resp = self._request("register_" + action.lower(), "POST",
-                                 f"{self.base_url}/RegisterSections", section_ids,
+                                 f"{self.base_url}/RegisterSections", [entry["SectionId"] for entry in registrations],
                                  json={"sectionRegistrations": registrations,
                                        "studentId": str(self.student_id)}, timeout=(1.5, 12))
             submission = self._submission_response(resp, section_ids)
-        except SessionExpiredError:
-            # An explicit authentication rejection did not accept this request.
-            # Undo only this submission; a lost CompleteRegistration response
-            # still retains its earlier Add's uncertainty and drop tracking.
-            for sid, result in previous.items():
-                self.results[sid] = result
-                result.status, result.reason = SectionStatus.UNKNOWN, "session_expired"
-                result.awaiting_verification = False
-            self._retry_after = previous_retry
-            self._drop_pending = previous_drop_pending
-            self._drop_attempted = previous_drop_attempted
-            raise
+        except (SessionExpiredError, requests.exceptions.ConnectTimeout) as exc:
+            # Explicit auth rejection and failure to connect leave the action unsent.
+            self.results.update(previous)
+            if drop_section_id:
+                self._drop_pending.discard(drop_section_id)
+                self._drop_attempted.discard(drop_section_id)
+            if isinstance(exc, SessionExpiredError):
+                raise
+            for sid in section_ids:
+                self.results[sid].attempted = True
+                self.results[sid].reason = "ConnectTimeout"
+            return SubmissionResult(SubmissionStatus.UNKNOWN, "ConnectTimeout")
         except requests.exceptions.RequestException as exc:
             submission = SubmissionResult(SubmissionStatus.UNKNOWN, type(exc).__name__)
+        retry_after = time.monotonic() + REGISTRATION_GRACE_SECONDS
         for sid in section_ids:
-            # The grace period starts when the response/timeout is observed,
-            # not when the request began (a read timeout already took 12s).
-            self._retry_after[sid] = time.monotonic() + 5
             result = self.results[sid]
             result.reason = submission.reason
-            if sid in submission.rejections:
+            if sid in submission.duplicates:
+                result.reason = "duplicate_requires_verification"
+                self._retry_after[sid] = retry_after
+            elif sid in submission.rejections:
                 result.status = SectionStatus.REJECTED
                 result.reason = result.rejection = submission.rejections[sid]
-            if sid in submission.duplicates:
-                result.status, result.reason = SectionStatus.UNKNOWN, "duplicate_requires_verification"
+                self._retry_after.pop(sid, None)
+            else:
+                self._retry_after[sid] = retry_after
         self._event("submission", action=action, section_ids=section_ids,
                     status=submission.status, reason=submission.reason,
                     rejections=submission.rejections, duplicates=sorted(submission.duplicates),
                     drop_section_id=drop_section_id)
         return submission
 
-    def complete_registration(self):
+    def complete_registration(self, section_ids=()):
         try:
             resp = self._request("complete_registration", "POST",
-                                 f"{self.base_url}/CompleteRegistration",
+                                 f"{self.base_url}/CompleteRegistration", section_ids,
                                  json={"studentId": str(self.student_id), "notifications": []},
                                  timeout=(1.5, 12))
             result = self._submission_response(resp, [])
         except requests.exceptions.RequestException as exc:
             result = SubmissionResult(SubmissionStatus.UNKNOWN, type(exc).__name__)
-        self._event("completion", status=result.status, reason=result.reason)
+        finally:
+            retry_after = time.monotonic() + REGISTRATION_GRACE_SECONDS
+            for sid in section_ids:
+                if sid in self._retry_after:
+                    self._retry_after[sid] = retry_after
+        self._event("completion", status=result.status, reason=result.reason, section_ids=section_ids)
         return result
 
     def _ensure_sections(self, section_ids):
@@ -312,9 +391,10 @@ class KeanApiClient:
         return ids
 
     def pending_sections(self, section_ids):
+        if self._drop_pending or self.registration_reader is None:
+            return []
         return [sid for sid in self._ensure_sections(section_ids)
-                if self.results[sid].status in (SectionStatus.NOT_REGISTERED, SectionStatus.PLANNED,
-                                                SectionStatus.REJECTED)
+                if self.results[sid].status not in (SectionStatus.REGISTERED, SectionStatus.WAITLISTED)
                 and not self.results[sid].awaiting_verification]
 
     def needs_verification(self, section_ids):
@@ -327,9 +407,10 @@ class KeanApiClient:
             return RegistrationSnapshot()
         return self.registration_reader.read(self, section_ids)
 
-    def verify_registration(self, section_ids):
+    def verify_registration(self, section_ids, extra_section_ids=()):
         ids = self._ensure_sections(section_ids)
-        query_ids = list(dict.fromkeys(ids + sorted(self._drop_pending)))
+        query_ids = list(dict.fromkeys(ids + sorted(self._drop_pending) + list(extra_section_ids)))
+        observed = time.monotonic()
         try:
             snapshot = self.read_registration_status(query_ids)
             if (not isinstance(snapshot, RegistrationSnapshot)
@@ -349,28 +430,43 @@ class KeanApiClient:
             # must not re-enable Add. Re-authenticate after an external manual drop.
             if result.status == SectionStatus.REGISTERED:
                 continue
+            if record and record.term_id:
+                result.term_id = record.term_id
+                if record.status != SectionStatus.UNKNOWN:
+                    self.section_terms[sid] = record.term_id
             if record and record.status in (SectionStatus.REGISTERED, SectionStatus.WAITLISTED):
                 result.status, result.reason = record.status, "account_record"
-                result.awaiting_verification = False
+                result.awaiting_verification, result.rejection = False, ""
+                self._retry_after.pop(sid, None)
+                self._negative_reads.discard(sid)
                 if record.status == SectionStatus.REGISTERED:
                     result.first_confirmed_at = result.first_confirmed_at or now
                     result.server_registered_at = record.server_registered_at
             elif record and record.status in (SectionStatus.NOT_REGISTERED, SectionStatus.PLANNED):
+                if result.status == SectionStatus.WAITLISTED:
+                    continue
+                if sid in self._retry_after:
+                    # A timeout can precede a late write or a stale account read.
+                    ready = sid in self._negative_reads and observed >= self._retry_after[sid]
+                    self._negative_reads.add(sid)
+                    if not ready:
+                        result.status, result.reason = SectionStatus.UNKNOWN, "waiting_for_registration_records"
+                        continue
+                    self._retry_after.pop(sid)
+                    self._negative_reads.discard(sid)
                 result.status = SectionStatus.REJECTED if result.rejection else record.status
                 result.reason = result.rejection or "account_record_not_registered"
-                # A timed-out request may still be processing on the server.
-                result.awaiting_verification = (sid in self._retry_after
-                                               and time.monotonic() < self._retry_after[sid])
-            elif result.status != SectionStatus.WAITLISTED:
-                result.awaiting_verification = True
+                result.awaiting_verification = False
+            elif result.awaiting_verification or result.status == SectionStatus.UNKNOWN:
                 if result.status != SectionStatus.REJECTED:
                     result.status = SectionStatus.UNKNOWN
-                result.reason = result.rejection or snapshot.reason
+                result.reason = result.rejection or (record.reason if record else "") or snapshot.reason
         for sid in list(self._drop_pending):
             record = snapshot.records.get(sid)
             if record and record.status in (SectionStatus.NOT_REGISTERED, SectionStatus.PLANNED):
                 self._drop_pending.remove(sid)
-        self._event("verification", reason=snapshot.reason, sections=self._states(ids),
+                self.results.pop(sid, None)
+        self._event("verification", reason=snapshot.reason, observed_at=now, sections=self._states(ids),
                     drop_pending=sorted(self._drop_pending))
         return snapshot
 
@@ -383,20 +479,29 @@ class KeanApiClient:
             self.results[sid].status == SectionStatus.REGISTERED for sid in ids)
 
     def result_message(self, section_ids):
-        message = "; ".join(i18n.tr("log_section_result", sid,
-                         i18n.tr("state_" + self.results[sid].status.value.lower()),
-                         self.results[sid].reason) for sid in section_ids)
+        parts = []
+        for sid in section_ids:
+            result = self.results[sid]
+            state = i18n.tr("state_" + result.status.value.lower())
+            reason_key = "reason_" + result.reason
+            reason = i18n.tr(reason_key)
+            parts.append(i18n.tr("log_section_result", sid, state,
+                                 result.reason if reason == reason_key else reason))
+        message = " | ".join(parts)
         if self._drop_pending:
-            message += "; " + i18n.tr("log_drop_unknown", ", ".join(sorted(self._drop_pending)))
+            message += " | " + i18n.tr("log_drop_unknown", ", ".join(sorted(self._drop_pending)))
         return message
 
     def execute_full_attack(self, section_ids, enable_waitlist=False, drop_section_id=None,
-                            submission_ids=None):
-        """Reconcile first; submission_ids=[] performs a strictly read-only round.
+                            submission_ids=None, *, verify_after=True):
+        """Submit eligible sections promptly, then reconcile account records.
 
-        Polling workers pass only sections whose availability they just checked.
+        The polling workers submit as soon as they find an opening, then verify
+        all written sections together at the end of that poll.
         """
         ids = self._ensure_sections(section_ids)
+        selected = set(map(str, submission_ids)) if submission_ids is not None else None
+        connect_timeout = False
         self.round_id += 1
         self._event("round_started", section_ids=ids)
         if self.round_id == 1:
@@ -404,36 +509,62 @@ class KeanApiClient:
             if self.registration_reader is None:
                 self._log(i18n.tr("log_reader_unavailable"), "error")
         try:
-            # Includes never-attempted targets: existing registrations must be
-            # discovered before the first Add, even if their sections are full.
-            if self.needs_verification(ids):
-                self.verify_registration(ids)
             pending = self.pending_sections(ids)
-            if submission_ids is not None:
-                pending = [sid for sid in pending if sid in submission_ids]
-            if self._drop_pending:
-                pending = []
+            if selected is not None:
+                pending = [sid for sid in pending if sid in selected]
+            if verify_after and not pending and self.needs_verification(ids):
+                self.verify_registration(ids)
+                if selected is None:
+                    pending = self.pending_sections(ids)
+
+            drop = str(drop_section_id) if drop_section_id else None
+            if pending and drop and drop not in self._drop_attempted:
+                if drop in ids:
+                    message = i18n.tr("log_drop_is_target", drop)
+                    self._log(message, "error")
+                    return False, message
+                # A swap must not drop anything if the replacement is already registered.
+                before_swap = self.verify_registration(ids, extra_section_ids=[drop]).records
+                negative = (SectionStatus.NOT_REGISTERED, SectionStatus.PLANNED)
+                pending = [sid for sid in self.pending_sections(pending)
+                           if sid in before_swap and before_swap[sid].status in negative]
+                record = before_swap.get(drop)
+                if pending and (not record or record.status not in (*negative, SectionStatus.REGISTERED)):
+                    message = i18n.tr("log_drop_unknown", drop)
+                    self._log(message, "error")
+                    return False, message
+                if record and record.status in negative:
+                    drop = None
+
             # Only a previous Closed rejection plus an authoritative negative
             # registration read can enable Waitlist, never a timeout/duplicate.
             fallback = [sid for sid in pending if enable_waitlist
                         and self.results[sid].rejection == "closed"]
             for action, targets in (("Add", [sid for sid in pending if sid not in fallback]),
                                     (WAITLIST_ACTION, fallback)):
-                if targets and not self._drop_pending:
-                    drop = drop_section_id if drop_section_id not in self._drop_attempted else None
-                    submitted = self.register_multiple_sections(targets, action=action, drop_section_id=drop)
-                    if submitted.status == SubmissionStatus.ACKNOWLEDGED:
-                        self.complete_registration()
+                targets = self.pending_sections(targets)
+                if not targets:
+                    continue
+                swap_drop = drop if drop not in self._drop_attempted else None
+                submitted = self.register_multiple_sections(targets, action=action, drop_section_id=swap_drop)
+                if submitted.should_complete:
+                    self.complete_registration(targets)
+                if submitted.reason == "ConnectTimeout":
+                    connect_timeout = True
+                elif verify_after:
                     self.verify_registration(ids)
             return self.all_registered(ids), self.result_message(ids)
         except SessionExpiredError:
             self._event("session_expired", section_ids=ids)
             raise
         finally:
-            unknown = self.needs_verification(ids)
-            self._unknown_rounds = self._unknown_rounds + 1 if unknown else 0
-            self.retry_delay = min(30, 2 ** min(self._unknown_rounds, 5)) if unknown else 0
+            unknown = bool(self._drop_pending) or any(self.results[sid].awaiting_verification for sid in ids)
+            if verify_after:
+                self._unknown_rounds = self._unknown_rounds + 1 if unknown else 0
+                self.retry_delay = (min(30, 2 ** min(self._unknown_rounds, 5)) if unknown
+                                    else 2 if connect_timeout else 0)
             self._event("round_finished", sections=self._states(ids),
                         all_registered=self.all_registered(ids), retry_delay=self.retry_delay,
                         drop_pending=sorted(self._drop_pending))
-            self._log(self.result_message(ids), "success" if self.all_registered(ids) else "normal")
+            if verify_after:
+                self._log(self.result_message(ids), "success" if self.all_registered(ids) else "normal")

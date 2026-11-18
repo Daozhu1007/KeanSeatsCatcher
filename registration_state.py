@@ -44,6 +44,7 @@ class SectionResult:
     attempted: bool = False
     awaiting_verification: bool = False
     rejection: str = ""
+    term_id: str | None = None
     first_confirmed_at: str | None = None
     # Only a verified reader can supply this; client receipt time is NOT it.
     server_registered_at: str | None = None
@@ -53,6 +54,8 @@ class SectionResult:
 class RegistrationRecord:
     status: SectionStatus
     server_registered_at: str | None = None
+    term_id: str | None = None
+    reason: str = ""
 
 
 @dataclass
@@ -78,6 +81,7 @@ class SubmissionResult:
     reason: str
     rejections: dict[str, str] = field(default_factory=dict)
     duplicates: set[str] = field(default_factory=set)
+    should_complete: bool = False
 
     def __bool__(self):
         raise TypeError("Inspect SubmissionResult.status; acknowledgment is not enrollment")

@@ -1,4 +1,5 @@
 import threading
+
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from i18n import i18n
@@ -58,7 +59,7 @@ class AutoCatchWorker(QThread):
             return False
 
         self.recovery_count += 1
-        if recover_session(self.api_engine, self.auth_manager):
+        if recover_session(self.api_engine, self.auth_manager, section_ids=self.section_ids):
             self.log_signal.emit(
                 "[SUCCESS] Session recovered. Resuming Auto-Catch...",
                 "success")
@@ -86,70 +87,54 @@ class AutoCatchWorker(QThread):
             self.log_signal.emit(
                 i18n.tr("autocatch_round_start", round_count), "normal")
 
-            # Reading account evidence must never itself authorize another Add.
-            found_seats = []
-            success, msg = False, ""
+            found_section = False
             session_lost = False
+            pending = self.api_engine.pending_sections(self.section_ids)
             try:
-                if (self.api_engine.needs_verification(self.section_ids)
-                        or self.api_engine.all_registered(self.section_ids)):
-                    success, msg = self.api_engine.execute_full_attack(
-                        self.section_ids, submission_ids=[])
+                for sec_id in self.api_engine.poll_available_sections(
+                        pending, self.enable_waitlist, lambda: self.is_running):
+                    found_section = True
+                    self.seat_found_signal.emit(sec_id, 0)
+                    self.status_signal.emit(STATE_ATTACKING)
+                    self.api_engine.execute_full_attack(
+                        self.section_ids, enable_waitlist=self.enable_waitlist,
+                        drop_section_id=self.drop_section_id or None, submission_ids=[sec_id],
+                        verify_after=False)
             except SessionExpiredError:
                 session_lost = True
-            for sec_id in ([] if session_lost or success else self.api_engine.pending_sections(self.section_ids)):
-                if not self.is_running:
-                    break
-                try:
-                    if self.api_engine.check_section_status(
-                            sec_id, enable_waitlist=self.enable_waitlist):
-                        found_seats.append(sec_id)
-                        self.seat_found_signal.emit(sec_id, 0)
-                except SessionExpiredError:
-                    session_lost = True
-                    break
 
             self.api_engine._event("poll_finished", worker="autocatch", poll_round=round_count,
-                                   session_expired=session_lost, needs_attack=bool(found_seats))
+                                   session_expired=session_lost, found_section=found_section)
             if session_lost:
                 if not self._recover_session():
                     break
                 continue
 
-            if (found_seats or success) and self.is_running:
-                self.status_signal.emit(STATE_ATTACKING)
-
-                try:
-                    if not success:
-                        success, msg = self.api_engine.execute_full_attack(
-                            self.section_ids,
-                            enable_waitlist=self.enable_waitlist,
-                            drop_section_id=self.drop_section_id or None,
-                            submission_ids=found_seats)
-                except SessionExpiredError:
-                    self.log_signal.emit(
-                        "[WARNING] Session expired during attack. Initiating automatic re-authentication...",
-                        "error")
-                    if not self._recover_session():
-                        break
-                    continue
-
-                self.attack_result_signal.emit(success, msg)
-
-                if success:
-                    self.is_running = False
-                    break
+            if not self.is_running:
+                break
+            try:
+                if self.api_engine.needs_verification(self.section_ids):
+                    success, msg = self.api_engine.execute_full_attack(self.section_ids, submission_ids=[])
                 else:
-                    self.log_signal.emit(
-                        i18n.tr("autocatch_attack_failed", msg), "error")
-            else:
+                    success = self.api_engine.all_registered(self.section_ids)
+                    msg = self.api_engine.result_message(self.section_ids)
+            except SessionExpiredError:
+                if not self._recover_session():
+                    break
+                continue
+
+            if success or found_section:
+                self.attack_result_signal.emit(success, msg)
+            elif pending:
                 self.log_signal.emit(
                     i18n.tr("autocatch_no_seats"), "normal")
 
-            if not self.api_engine.pending_sections(self.section_ids) and not self.api_engine.needs_verification(self.section_ids):
+            pending = self.api_engine.pending_sections(self.section_ids)
+            if success or (not pending and not self.api_engine.needs_verification(self.section_ids)):
                 self.is_running = False
             if self.is_running:
-                self._sleep(max(1.0, self.interval, self.api_engine.retry_delay))
+                delay = self.api_engine.retry_delay
+                self._sleep(max(1.0, self.interval, delay) if pending else max(2.0, delay))
 
         self.api_engine._event("worker_stopped", worker="autocatch",
                               success=self.api_engine.all_registered(self.section_ids))

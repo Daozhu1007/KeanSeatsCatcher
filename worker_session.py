@@ -2,7 +2,7 @@
 from registration_state import SessionStatus
 
 
-def recover_session(client, auth_manager, headless=False):
+def recover_session(client, auth_manager, headless=False, section_ids=()):
     if auth_manager is None:
         return False
     try:
@@ -10,6 +10,8 @@ def recover_session(client, auth_manager, headless=False):
         client.update_credentials(creds["cookies"], creds["verification_token"],
                                   student_id=creds["student_id"])
         recovered = client.check_session().status == SessionStatus.VALID
+        if recovered and section_ids:
+            client.verify_registration(section_ids)
         client._event("session_recovery", recovered=recovered)
         return recovered
     except Exception as exc:
