@@ -62,7 +62,8 @@ ui_main.py  →  PyQt6 + qfluentwidgets
 | **Recovery Counter** | Status bar shows `Polling (Round #1245) \| Recoveries: 3...` for situational awareness |
 | **Waitlist Fallback** | Requires a scoped Closed rejection and a verified record showing the Section is not registered |
 | **Session Check** | Valid / expired / unknown session status, with response time |
-| **Event Logs** | Millisecond JSONL logs in `~/.keanseatscatcher/logs` (override with `KSC_LOG_DIR`); no credentials |
+| **Event Logs** | JSONL audit trail with requests, redacted responses, per-Section results and timings in `~/.keanseatscatcher/logs` |
+| **My Catches** | Confirmed catches with request details, filterable by Student ID. History lives in `~/.keanseatscatcher/catches.sqlite3` across Portable upgrades. |
 
 ### 2. CLI Headless Mode (Linux Server · Cloud Phantom)
 

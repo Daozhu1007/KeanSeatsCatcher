@@ -71,6 +71,8 @@ def test_dashboard_deadline_does_not_wait_for_credit_lookup(tmp_path, monkeypatc
     finally:
         release.set()
         assert lookup_finished.wait(3)
+    lookup = [e for e in events(api) if e.get("operation") == "section_credit_lookup"]
+    assert len(lookup) == 2 and lookup[0]["round_id"] == lookup[1]["round_id"]
 
 
 @pytest.mark.parametrize("worker_class", [MonitorWorker, AutoCatchWorker, CloudWorker])

@@ -1,4 +1,4 @@
-# 注册结果核验（v1.3.1）
+# 注册结果核验（v1.3.2）
 
 Dashboard 在设定时间发出首批普通 Add。Auto-Catch 在每门课通过余量检查时立即提交，
 同一轮可继续检查其余 Section，最后统一核验个人课表。登录和首次普通 Add 的关键路径只使用原有请求。
@@ -29,10 +29,10 @@ Dashboard 在设定时间发出首批普通 Add。Auto-Catch 在每门课通过�
   固定学分取自匹配 Section 的 `MinimumCredits`，其 `MaximumCredits` 为 null 或同值。
   可变学分采用 `Current` 中同账户、同 Section 的有效已选学分。
   [KeanWISE 规划页脚本](https://kean-ss.colleague.elluciancloud.com/Student/bundles/planning/degreeplansindexscripts)
-- Dashboard 在填写 Section 或启动后后台读取学分。Auto-Catch 和 CLI 复用余量响应中的固定学分，
+- Dashboard 在结束 Section ID 编辑或启动后后台读取学分。Auto-Catch 和 CLI 复用余量响应中的固定学分，
   并在后台读取已选学分。已缓存的学分直接写入 Add/Waitlist 请求。
   到提交时仍未取得可信数值的 Section 会省略 `Credits`，并记录在 `unresolved_credits`。
-  Drop 发送 `Credits: null`。服务器对省略字段的处理及实际注册结果仍需实网确认。
+  Drop 发送 `Credits: null`。2026-11-19 的实网测试有一门课在省略 `Credits` 时成功注册。
 
 ## 字段与完整性
 
@@ -81,7 +81,7 @@ Auto-Catch 和 CLI 的只读核验完成后，重试前仍须重新检查余量�
 Waitlist 仅用于已明确 Closed、且个人记录确认未选的目标，候补状态会单独显示。
 显式选择同步换课时，提交前会核验新旧课，避免对已注册的替换目标附带退课。发出的 Drop 不会自动重放。
 确认退课目标已离开实际注册记录后，才能报告整次换课成功。
-已有确认结果只保存在当前 client 内存中，不从历史日志恢复；重启后不会把旧学期/旧会话结果当作当前事实。
+当前 client 的核验状态保存在内存。每次启动后，提交和重试仍依照本次会话的课表证据。
 手动在官方页面改变课表后，应重新认证以建立新的 client。
 
 ## Session Check
@@ -105,20 +105,31 @@ RegisterSections 明确返回认证拒绝时，撤销本次 attempted/等待核�
 ## 日志
 
 默认目录：`~/.keanseatscatcher/logs/`，Windows 为 `%USERPROFILE%\.keanseatscatcher\logs\`。
-可设置 `KSC_LOG_DIR`；Docker Compose 已映射到宿主机 `./logs`，且不会在任务结束后自动重启并重放注册。
+可设置 `KSC_LOG_DIR`。Docker Compose 将日志和历史库映射到宿主机 `./logs`。
 每个 API client 生成一个 `registration-<run_id>.jsonl` 文件，界面首次提交时显示完整路径。
 
 每条事件使用 UTC ISO 8601 毫秒时间戳，可用 run/round/request ID 关联。
-记录轮次起止、请求起止、实际收到响应的时间（未收到则为 null）、单调时钟耗时、
-HTTP 状态、超时异常类型、各课程状态、已识别的学期和等待核验标记。每条事件单独追加、flush、关闭文件，
+记录轮次、HTTP 方法、路径、请求参数和 JSON、响应、请求耗时与收到响应的时间。
+附带具体通知、错误、已识别的课程和学期，以及各 Section 的发送学分和核验状态。
+每条事件单独追加、flush、关闭文件，
 因此正常进程退出前不需要统一导出。进程被强制杀死时未配对的 request_started 可识别未完成请求；
 不保证操作系统断电时所有文件缓存都已落盘。
 
 - `first_confirmed_at`：客户端首次从 reader 确认注册的时间。
 - `server_registered_at`：仅接受真实记录明确提供的服务端注册时间；未提供时为 null。
-- 不记录 Cookie、Token、HTTP 头、请求/响应正文、登录 URL 参数或原始异常字符串。
-  拒绝原因保存为 `closed`、`credits_rejected` 等代码，避免服务端文本夹带凭证。
+- 通知及错误经过脱敏。凭证字段、令牌值、HTTP 头、登录页正文和 URL 查询串会被过滤。
+  个人课表响应保留目标 Section 的相关字段。日志与历史包含 Student ID 和选课记录。
 - 磁盘写入失败会明确提示；不把日志失败或网络失败伪装为注册成功。
+
+## My Catches（已抢到）
+
+KSC 提交后经个人课表确认注册的 Section 会进入历史。只读核验和服务器明确返回的重复注册不会新建记录。
+记录按 Student ID、学期、Section ID 保留首次确认，包含当时的请求和响应。课程学分与实际发送的
+`Credits` 分开显示。当前注册状态以 KeanWISE 为准。
+
+历史保存在 `~/.keanseatscatcher/catches.sqlite3`，Portable 解压或升级后可直接读取。
+`KSC_DATA_DIR` 可指定数据目录。旧日志恢复的条目会保留已有的状态、时间和请求耗时，
+缺失的请求体、响应体和 Student ID 会标记为未记录。
 
 ## 只读复核
 

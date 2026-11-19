@@ -11,8 +11,8 @@ else:
 import time
 import threading
 import datetime
-from PyQt6.QtGui import QPixmap, QIcon, QIntValidator, QDesktopServices
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal, QUrl
+from PyQt6.QtGui import QPixmap, QIcon, QIntValidator, QDesktopServices, QTextCursor
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
 from qfluentwidgets import (FluentWindow, SubtitleLabel, BodyLabel, LineEdit,
                             PushButton, TextEdit, CardWidget,
@@ -28,6 +28,7 @@ from registration_state import SessionStatus
 from registration_reader import DegreePlanRegistrationReader
 from worker_session import recover_session
 from ui_autocatch import AutoCatchInterface
+from ui_catches import MyCatchesInterface
 from ui_settings import SettingsInterface
 
 
@@ -310,20 +311,18 @@ class MonitorInterface(QWidget):
         self.btn_stop.clicked.connect(self.stop_attack)
         self.btn_ping.clicked.connect(self.ping_server)
 
-        self._credit_lookup_timer = QTimer(self)
-        self._credit_lookup_timer.setSingleShot(True)
-        self._credit_lookup_timer.setInterval(300)
-        self._credit_lookup_timer.timeout.connect(self._prefetch_credits)
-        self.section_input.textChanged.connect(lambda _: self._credit_lookup_timer.start())
+        self.section_input.editingFinished.connect(self._prefetch_credits)
 
     def set_api_engine(self, engine):
         self.api_engine = engine
         self.log(i18n.tr("msg_engine_loaded"), "success")
-        self._credit_lookup_timer.start()
+        self._prefetch_credits()
 
     def _prefetch_credits(self):
         if self.api_engine and not self.is_running and not (self.sibling and self.sibling.is_running):
-            self.api_engine.prefetch_registration_credits(self._target_sections(), include_section_details=True)
+            ids = self._target_sections()
+            if ids:
+                self.api_engine.prefetch_registration_credits(ids, include_section_details=True)
 
     def _target_sections(self):
         return [sid for sid in map(str.strip, self.section_input.text().split(",")) if sid]
@@ -347,7 +346,9 @@ class MonitorInterface(QWidget):
         if state == "error": prefix = "[ERROR] "
         if state == "success": prefix = "[SUCCESS] "
 
-        self.log_box.append(f"[{timestamp}] {prefix}{msg}")
+        self.log_box.moveCursor(QTextCursor.MoveOperation.End)
+        separator = "" if self.log_box.document().isEmpty() else "\n"
+        self.log_box.insertPlainText(f"{separator}[{timestamp}] {prefix}{msg}")
         self.log_box.verticalScrollBar().setValue(self.log_box.verticalScrollBar().maximum())
 
     def update_btn_text(self, text):
@@ -578,7 +579,7 @@ class AboutInterface(ScrollArea):
         info_layout.setSpacing(5)
         name_lbl = SubtitleLabel("KeanSeatsCatcher")
         name_lbl.setStyleSheet("font-size: 22px; font-weight: bold;")
-        ver_lbl = BodyLabel("Version 1.3.1")
+        ver_lbl = BodyLabel("Version 1.3.2")
         ver_lbl.setStyleSheet("color: #a0a0a0;")
         info_layout.addWidget(name_lbl)
         info_layout.addWidget(ver_lbl)
@@ -679,12 +680,14 @@ class KeanSeatsCatcherApp(FluentWindow):
 
         self.monitor_interface = MonitorInterface(self)
         self.autocatch_interface = AutoCatchInterface(self)
+        self.catches_interface = MyCatchesInterface(self)
         self.auth_interface = AuthInterface(self)
         self.settings_interface = SettingsInterface(self)
         self.about_interface = AboutInterface(self)
 
         self.auth_interface.engine_ready_signal.connect(self.monitor_interface.set_api_engine)
         self.auth_interface.engine_ready_signal.connect(self.autocatch_interface.set_api_engine)
+        self.auth_interface.engine_ready_signal.connect(self.catches_interface.bind_engine)
         self.autocatch_interface.set_auth_manager(self.auth_interface.auth_manager)
         self.monitor_interface.auth_manager = self.auth_interface.auth_manager
 
@@ -693,6 +696,7 @@ class KeanSeatsCatcherApp(FluentWindow):
 
         self.addSubInterface(self.monitor_interface, FIF.VIEW, i18n.tr("tab_monitor"))
         self.addSubInterface(self.autocatch_interface, FIF.ZOOM, i18n.tr("tab_autocatch"))
+        self.addSubInterface(self.catches_interface, FIF.HISTORY, i18n.tr("tab_catches"))
         self.addSubInterface(self.auth_interface, FIF.FINGERPRINT, i18n.tr("tab_auth"))
         self.addSubInterface(self.settings_interface, FIF.SETTING, i18n.tr("tab_settings"), position=NavigationItemPosition.BOTTOM)
         self.addSubInterface(self.about_interface, FIF.INFO, i18n.tr("tab_about"), position=NavigationItemPosition.BOTTOM)

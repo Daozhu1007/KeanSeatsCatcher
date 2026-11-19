@@ -1,15 +1,19 @@
 import re
+import sqlite3
 import threading
 import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import asdict, replace
+from datetime import datetime
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 import requests
 
-from event_log import EventLog, timestamp
+from catch_history import CatchHistory, sent_credits
+from event_log import (EventLog, Redactor, course_name, credential_values, request_details,
+                       response_details, response_messages, timestamp)
 from i18n import i18n
 from registration_state import (RegistrationRecord, RegistrationSnapshot, SectionResult, SectionStatus,
                                 SessionCheck, SessionStatus, SubmissionResult,
@@ -69,6 +73,12 @@ class KeanApiClient:
         self._credit_lookup_lock = threading.Lock()
         self.results = {}
         self.events = EventLog(log_dir)
+        self.history = CatchHistory()
+        self.history_callback = None
+        self._catalog_metadata = {}
+        self._account_metadata = {}
+        self._catch_attempts = {}
+        self._last_registration_read = None
         self.round_id = 0
         self.retry_delay = 0
         self._unknown_rounds = 0
@@ -90,8 +100,9 @@ class KeanApiClient:
         if self.log_callback:
             self.log_callback(msg, level)
 
-    def _event(self, event, **fields):
-        self.events.write(event, round_id=self.round_id, **fields)
+    def _event(self, event, *, round_id=None, **fields):
+        self.events.write(event, round_id=self.round_id if round_id is None else round_id,
+                          student_id=str(self.student_id), **fields)
         if self.events.error and not self._log_error_reported:
             self._log(i18n.tr("log_file_error", self.events.error), "error")
             self._log_error_reported = True
@@ -134,35 +145,78 @@ class KeanApiClient:
             if data == "Could not validate this request's antiforgery token.":
                 raise SessionExpiredError("invalid_verification_token")
 
-    def _request(self, operation, method, url, section_ids=(), *, session=None, **kwargs):
-        """All traffic, including future read-only adapters, is audited here."""
+    def _request(self, operation, method, url, section_ids=(), *, session=None, capture=None, **kwargs):
+        """Audit the actual payload and the credential-filtered response."""
+        request_session = self.session if session is None else session
+        secrets = credential_values(request_session)
         request_id = uuid.uuid4().hex
+        round_id = self.round_id
+        ids = list(section_ids)
+        started = dict(request_id=request_id, operation=operation, method=method,
+                       section_ids=ids, background=session is not None, started_at=timestamp(),
+                       request=request_details(url, kwargs, Redactor(secrets)))
+        self._event("request_started", round_id=round_id, **started)
+        reason, detail = "unknown", None
+        resp, response_received_at, elapsed_ms = None, None, None
         start = time.perf_counter()
-        self._event("request_started", request_id=request_id, operation=operation,
-                    method=method, section_ids=list(section_ids))
-        reason, status, response_received_at = "unknown", None, None
         try:
             # Never forward the verification token to an SSO redirect target.
-            request_session = self.session if session is None else session
             resp = request_session.request(method, url, allow_redirects=False, **kwargs)
+            elapsed_ms = (time.perf_counter() - start) * 1000
             response_received_at = timestamp()
-            status = resp.status_code
             self._check_expired(resp)
             reason = "response_received"
             return resp
         except SessionExpiredError as exc:
-            reason = "session_expired"
-            self._event("session_rejected", request_id=request_id, operation=operation,
-                        reason=str(exc))
+            reason, detail = "session_expired", str(exc)
+            self._event("session_rejected", round_id=round_id, request_id=request_id, operation=operation,
+                        reason=detail)
             raise
         except requests.exceptions.RequestException as exc:
             reason = type(exc).__name__
             raise
         finally:
-            self._event("request_finished", request_id=request_id, operation=operation,
-                        section_ids=list(section_ids), http_status=status, reason=reason,
-                        response_received_at=response_received_at,
-                        elapsed_ms=round((time.perf_counter() - start) * 1000, 3))
+            if elapsed_ms is None:
+                elapsed_ms = (time.perf_counter() - start) * 1000
+            secrets.update(credential_values(request_session))
+            if resp is not None:
+                secrets.update(cookie.value for cookie in resp.cookies)
+            try:
+                response = response_details(resp, operation, ids, self.student_id, Redactor(secrets))
+            except (ValueError, TypeError, RecursionError) as exc:
+                response = {"format": "unavailable", "audit_error": type(exc).__name__}
+            finished = dict(http_status=resp.status_code if resp is not None else None,
+                            reason=reason, error_detail=detail, response_received_at=response_received_at,
+                            elapsed_ms=round(elapsed_ms, 3), response=response)
+            trace = {**started, **finished, "round_id": round_id}
+            if capture is not None:
+                capture.update(trace)
+            if operation == "registration_read":
+                self._last_registration_read = trace
+            self._event("request_finished", round_id=round_id, request_id=request_id, operation=operation,
+                        section_ids=ids, background=session is not None, **finished)
+            if operation in ("register_add", "register_waitlist", "complete_registration", "registration_read"):
+                self._log_request(trace)
+
+    def _log_request(self, trace):
+        operation = trace["operation"]
+        ids = trace["section_ids"]
+        status = trace["http_status"]
+        outcome = f"HTTP {status}" if status is not None else trace["reason"]
+        if trace["error_detail"]:
+            outcome += f" · {trace['error_detail']}"
+        level = "normal" if status == 200 and trace["reason"] == "response_received" else "error"
+        self._log(i18n.tr("log_request_summary", i18n.tr("operation_" + operation),
+                          ", ".join(ids), outcome, trace["elapsed_ms"]), level)
+        for sid in ids:
+            credits = sent_credits([trace], sid)
+            if credits["status"] != "unrecorded":
+                self._log(i18n.tr("log_credits_sent", self._section_label(sid),
+                                  credits.get("value", i18n.tr("credits_omitted"))))
+        for kind, message, sid in response_messages(trace["response"]):
+            reference = f" · {sid}" if sid is not None else ""
+            self._log(f"[{kind}{reference}] {message[:2000]}",
+                      "error" if level == "error" or kind in ("Error", "Warning") else "normal")
 
     def check_session(self):
         start = time.perf_counter()
@@ -193,9 +247,10 @@ class KeanApiClient:
         root = "/".join(self.base_url.split("/")[:3])
         sid = str(section_id)
         path = "/Student/Student/Courses/SectionDetails" if session is None else "/Student/Courses/SectionDetails"
+        audit = {}
         resp = self._request(operation, "POST", f"{root}{path}",
                              [sid], json={"sectionId": sid, "studentId": str(self.student_id)},
-                             timeout=timeout, session=session)
+                             timeout=timeout, session=session, capture=audit)
         if resp.status_code != 200:
             if session is None:
                 self._log(i18n.tr("log_section_check_http", sid, resp.status_code), "normal")
@@ -215,6 +270,19 @@ class KeanApiClient:
                 self._section_credit_limits[sid] = limits
             else:
                 self._section_credit_limits.setdefault(sid, limits)
+        if returned_id is not None:
+            metadata = audit["response"].get("body")
+            if isinstance(metadata, dict):
+                audit_term = metadata.get("TermId")
+                details = {
+                    "course_name": course_name(metadata),
+                    "term_id": audit_term if isinstance(audit_term, str) else None,
+                    "credits": limits[0] if limits is not None and limits[0] == limits[1] else None,
+                }
+                if session is None:
+                    self._catalog_metadata[sid] = details
+                else:
+                    self._catalog_metadata.setdefault(sid, details)
         return data
 
     def _credits_for(self, section_id):
@@ -298,7 +366,7 @@ class KeanApiClient:
                             and isinstance(maximum, (int, float)) and waitlisted < maximum
                             and data.get("AllowWaitlist") is not False)
             self._event("availability", section_id=str(section_id),
-                        has_seat=has_seat, has_waitlist=bool(has_waitlist), term_id=self.section_terms.get(str(section_id)))
+                        has_seat=has_seat, has_waitlist=bool(has_waitlist), **self._course_details(str(section_id)))
             if has_seat:
                 self._log(i18n.tr("log_section_open", section_id, available, enrolled, capacity), "success")
             elif has_waitlist:
@@ -330,7 +398,7 @@ class KeanApiClient:
 
         Associate only an explicit SectionId, exact numeric ID in the message,
         or single-target request. Course names in batch messages are ambiguous.
-        Store reason codes, not raw server text which may contain secrets.
+        The request audit records the redacted server text.
         """
         if not isinstance(items, list) or any(not isinstance(x, dict) for x in items):
             return SubmissionResult(SubmissionStatus.UNKNOWN, "invalid_notifications")
@@ -405,11 +473,12 @@ class KeanApiClient:
             result.attempted = result.awaiting_verification = True
             result.status, result.reason, result.rejection = SectionStatus.UNKNOWN, "request_sent", ""
             self._negative_reads.discard(sid)
+        audit = {}
         try:
             resp = self._request("register_" + action.lower(), "POST",
                                  f"{self.base_url}/RegisterSections", [entry["SectionId"] for entry in registrations],
                                  json={"sectionRegistrations": registrations,
-                                       "studentId": str(self.student_id)}, timeout=(1.5, 12))
+                                       "studentId": str(self.student_id)}, timeout=(1.5, 12), capture=audit)
             submission = self._submission_response(resp, section_ids)
         except (SessionExpiredError, requests.exceptions.ConnectTimeout) as exc:
             # Explicit auth rejection and failure to connect leave the action unsent.
@@ -430,6 +499,7 @@ class KeanApiClient:
             result = self.results[sid]
             result.reason = submission.reason
             if sid in submission.duplicates:
+                self._catch_attempts.pop(sid, None)
                 result.reason = "duplicate_requires_verification"
                 self._retry_after[sid] = retry_after
             elif sid in submission.rejections:
@@ -438,18 +508,23 @@ class KeanApiClient:
                 self._retry_after.pop(sid, None)
             else:
                 self._retry_after[sid] = retry_after
+            if sid not in submission.duplicates and audit:
+                self._catch_attempts[sid] = [audit]
         self._event("submission", action=action, section_ids=section_ids,
+                    request_id=audit.get("request_id"), sections=self._states(section_ids),
+                    sent_credits={sid: sent_credits([audit], sid) for sid in section_ids},
                     status=submission.status, reason=submission.reason,
                     rejections=submission.rejections, duplicates=sorted(submission.duplicates),
                     drop_section_id=drop_section_id, unresolved_credits=unresolved_credits)
         return submission
 
     def complete_registration(self, section_ids=()):
+        audit = {}
         try:
             resp = self._request("complete_registration", "POST",
                                  f"{self.base_url}/CompleteRegistration", section_ids,
                                  json={"studentId": str(self.student_id), "notifications": []},
-                                 timeout=(1.5, 12))
+                                 timeout=(1.5, 12), capture=audit)
             result = self._submission_response(resp, [])
         except requests.exceptions.RequestException as exc:
             result = SubmissionResult(SubmissionStatus.UNKNOWN, type(exc).__name__)
@@ -458,7 +533,10 @@ class KeanApiClient:
             for sid in section_ids:
                 if sid in self._retry_after:
                     self._retry_after[sid] = retry_after
-        self._event("completion", status=result.status, reason=result.reason, section_ids=section_ids)
+                if audit and sid in self._catch_attempts:
+                    self._catch_attempts[sid].append(audit)
+        self._event("completion", status=result.status, reason=result.reason, section_ids=section_ids,
+                    request_id=audit.get("request_id"))
         return result
 
     def _ensure_sections(self, section_ids):
@@ -488,6 +566,7 @@ class KeanApiClient:
         ids = self._ensure_sections(section_ids)
         query_ids = list(dict.fromkeys(ids + sorted(self._drop_pending) + list(extra_section_ids)))
         observed = time.monotonic()
+        self._last_registration_read = None
         try:
             snapshot = self.read_registration_status(query_ids)
             if (not isinstance(snapshot, RegistrationSnapshot)
@@ -503,6 +582,8 @@ class KeanApiClient:
             self._planned_credits.update((sid, credits) for sid, credits in snapshot.planned_credits.items()
                                          if sid in query_ids and valid_credits(credits))
         now = timestamp()
+        self._remember_account_metadata(snapshot)
+        new_catches = []
         for sid in ids:
             result = self.results[sid]
             record = snapshot.records.get(sid)
@@ -522,6 +603,8 @@ class KeanApiClient:
                 if record.status == SectionStatus.REGISTERED:
                     result.first_confirmed_at = result.first_confirmed_at or now
                     result.server_registered_at = record.server_registered_at
+                    if result.attempted and sid in self._catch_attempts:
+                        new_catches.append(self._confirmed_catch(sid, result))
             elif record and record.status in (SectionStatus.NOT_REGISTERED, SectionStatus.PLANNED):
                 if result.status == SectionStatus.WAITLISTED:
                     continue
@@ -547,11 +630,83 @@ class KeanApiClient:
                 self._drop_pending.remove(sid)
                 self.results.pop(sid, None)
         self._event("verification", reason=snapshot.reason, observed_at=now, sections=self._states(ids),
+                    request_id=(self._last_registration_read or {}).get("request_id"),
+                    account_records={sid: asdict(record) for sid, record in snapshot.records.items()},
                     drop_pending=sorted(self._drop_pending))
+        observed_at = datetime.fromisoformat(now).astimezone().isoformat(timespec="milliseconds")
+        self._log(i18n.tr("log_verification_time", observed_at, snapshot.reason))
+        if new_catches:
+            try:
+                if self.history.save(new_catches) and self.history_callback:
+                    self.history_callback()
+            except (OSError, sqlite3.Error) as exc:
+                self._log(i18n.tr("log_history_error", type(exc).__name__), "error")
         return snapshot
 
+    def _remember_account_metadata(self, snapshot):
+        read = self._last_registration_read or {}
+        body = (read.get("response") or {}).get("body")
+        plan = body.get("DegreePlan", {}) if isinstance(body, dict) else {}
+        for term in plan.get("Terms", []):
+            matches = {}
+            for course in term.get("PlannedCourses", []):
+                history = course["AcademicHistory"]
+                section = course["Section"] or history["Section"]
+                sid = str(section.get("Id", ""))
+                record = snapshot.records.get(sid)
+                if record and record.term_id == term.get("Code") and record.status != SectionStatus.UNKNOWN:
+                    matches.setdefault(sid, []).append((section, course, history))
+            for sid, rows in matches.items():
+                if len(rows) != 1:
+                    continue
+                section, course, history = rows[0]
+                credits = history.get("Credits")
+                if not valid_credits(credits):
+                    credits = course.get("Credits")
+                self._account_metadata[sid] = {
+                    "course_name": course_name(section, course, history["Section"]),
+                    "term_id": term["Code"],
+                    "credits": credits if valid_credits(credits) else None,
+                }
+
+    def _course_details(self, sid):
+        account = self._account_metadata.get(sid, {})
+        catalog = self._catalog_metadata.get(sid, {})
+        result = self.results.get(sid)
+        term = (result.term_id if result else None) or account.get("term_id") or catalog.get("term_id")
+        if account.get("term_id") != term:
+            account = {}
+        if catalog.get("term_id") not in (term, None):
+            catalog = {}
+        credits = account.get("credits")
+        source = "account"
+        if credits is None:
+            credits, source = catalog.get("credits"), "catalog"
+        return {"course_name": account.get("course_name") or catalog.get("course_name"),
+                "term_id": term, "credits": credits, "credits_source": source if credits is not None else None}
+
+    def _confirmed_catch(self, sid, result):
+        requests = self._catch_attempts.pop(sid)
+        credits = sent_credits(requests, sid)
+        if self._last_registration_read:
+            requests.append(self._last_registration_read)
+        details = self._course_details(sid)
+        if details["credits"] is None and "value" in credits:
+            details.update(credits=credits["value"], credits_source="submitted")
+        return {
+            **details, "section_id": sid, "student_id": str(self.student_id),
+            "confirmed_at": result.first_confirmed_at, "server_registered_at": result.server_registered_at,
+            "source": "live", "run_id": self.events.run_id, "source_log": self.events.path.name,
+            "requests": requests, "sent_credits": credits,
+        }
+
+    def _section_label(self, sid):
+        details = self._course_details(sid)
+        name, term = details["course_name"], details["term_id"]
+        return " · ".join(part for part in (name, sid, term) if part)
+
     def _states(self, ids):
-        return {sid: asdict(self.results[sid]) for sid in ids}
+        return {sid: {**asdict(self.results[sid]), **self._course_details(sid)} for sid in ids}
 
     def all_registered(self, section_ids):
         ids = self._ensure_sections(section_ids)
@@ -565,7 +720,7 @@ class KeanApiClient:
             state = i18n.tr("state_" + result.status.value.lower())
             reason_key = "reason_" + result.reason
             reason = i18n.tr(reason_key)
-            parts.append(i18n.tr("log_section_result", sid, state,
+            parts.append(i18n.tr("log_section_result", self._section_label(sid), state,
                                  result.reason if reason == reason_key else reason))
         message = " | ".join(parts)
         if self._drop_pending:

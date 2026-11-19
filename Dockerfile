@@ -9,7 +9,7 @@ RUN pip install --no-cache-dir -r requirements-cli.txt
 
 # Copy only headless runtime files (minimal attack surface)
 COPY core_api.py .
-COPY registration_state.py registration_reader.py event_log.py worker_session.py ./
+COPY registration_state.py registration_reader.py event_log.py catch_history.py worker_session.py ./
 COPY core_auth.py .
 COPY cloud_worker.py .
 COPY cloud_cli.py .

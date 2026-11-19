@@ -1,5 +1,6 @@
 import datetime
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
 from qfluentwidgets import (SubtitleLabel, BodyLabel, LineEdit,
                             PushButton, TextEdit, CardWidget,
@@ -119,7 +120,9 @@ class AutoCatchInterface(QWidget):
             prefix = "[ERROR] "
         if state == "success":
             prefix = "[SUCCESS] "
-        self.log_box.append(f"[{timestamp}] {prefix}{msg}")
+        self.log_box.moveCursor(QTextCursor.MoveOperation.End)
+        separator = "" if self.log_box.document().isEmpty() else "\n"
+        self.log_box.insertPlainText(f"{separator}[{timestamp}] {prefix}{msg}")
         self.log_box.verticalScrollBar().setValue(
             self.log_box.verticalScrollBar().maximum())
 

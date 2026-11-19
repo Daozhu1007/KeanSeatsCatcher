@@ -5,6 +5,7 @@ services:
     # Do not restart a completed/stopped registration worker and replay Add.
     restart: "no"
     environment:
+      KSC_DATA_DIR: /app/logs
       KSC_LOG_DIR: /app/logs
     volumes:
       - ./session.json:/app/session.json:ro
@@ -15,7 +16,7 @@ services:
       - --sections
       - 12345,67890                 # ← your target section IDs
       - --interval
-      - 15                          # polling interval in seconds
+      - "15"                        # polling interval in seconds
       - --load-session
       - session.json                # exported session from Phase 1
 

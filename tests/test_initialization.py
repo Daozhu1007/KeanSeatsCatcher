@@ -2,8 +2,6 @@ import json
 from unittest.mock import Mock
 
 import pytest
-from PyQt6.QtWidgets import QApplication
-
 import cloud_cli
 import core_auth
 import ui_main
@@ -28,9 +26,8 @@ def test_cli_authentication_paths_enable_scoped_reader(tmp_path, monkeypatch, ro
     assert isinstance(api.registration_reader, DegreePlanRegistrationReader)
 
 
-def test_gui_extraction_enables_scoped_reader(tmp_path, monkeypatch):
+def test_gui_extraction_enables_scoped_reader(tmp_path, monkeypatch, qt_app):
     monkeypatch.setenv("KSC_LOG_DIR", str(tmp_path))
-    app = QApplication.instance() or QApplication([])
     widget = ui_main.AuthInterface()
     widget.auth_manager = Mock()
     widget.auth_manager.extract_credentials.return_value = CREDENTIALS
