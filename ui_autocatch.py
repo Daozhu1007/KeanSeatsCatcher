@@ -129,7 +129,7 @@ class AutoCatchInterface(QWidget):
     def start_monitoring(self):
         if self.is_running:
             return
-        if self.sibling and hasattr(self.sibling, "ping_worker") and self.sibling.ping_worker.isRunning():
+        if self.sibling and self.sibling.is_checking_session:
             return
         if self.api_engine is None:
             InfoBar.error(

@@ -29,6 +29,7 @@ from registration_reader import DegreePlanRegistrationReader
 from worker_session import recover_session
 from ui_autocatch import AutoCatchInterface
 from ui_catches import MyCatchesInterface
+from ui_lookup import SectionLookupInterface
 from ui_settings import SettingsInterface
 
 
@@ -82,13 +83,16 @@ class PingWorker(QThread):
         self.api_engine = api_engine
 
     def run(self):
-        self.result_signal.emit(self.api_engine.check_session())
+        with self.api_engine.new_read_session() as session:
+            result = self.api_engine.check_session(session=session)
+        self.result_signal.emit(result)
 
 
 class MonitorWorker(QThread):
     log_signal = pyqtSignal(str, str)
     countdown_signal = pyqtSignal(str)
     finished_signal = pyqtSignal(bool)
+    waiting_changed = pyqtSignal()
 
     def __init__(self, api_engine, section_ids, interval, target_time_str, enable_waitlist=False,
                  auth_manager=None):
@@ -101,8 +105,23 @@ class MonitorWorker(QThread):
         self.enable_waitlist = enable_waitlist
         self.auth_manager = auth_manager
         self._stop_event = threading.Event()
+        self._schedule_lock = threading.Lock()
+        self._waiting_deadline = None
 
         self.api_engine.log_callback = lambda msg, level="normal": self.log_signal.emit(msg, level)
+
+    @property
+    def is_waiting(self):
+        deadline = self._waiting_deadline
+        return self.is_running and deadline is not None and datetime.datetime.now() < deadline
+
+    def refresh_waiting_session(self, cookies, verification_token, student_id):
+        # Only the local credential update shares the deadline handoff.
+        with self._schedule_lock:
+            if not self.is_waiting:
+                return False
+            self.api_engine.update_credentials(cookies, verification_token, student_id=student_id)
+            return True
 
     def _sleep(self, seconds: float):
         self._stop_event.wait(seconds)
@@ -130,6 +149,8 @@ class MonitorWorker(QThread):
                 target_dt = now
 
             if target_dt > now:
+                self._waiting_deadline = target_dt
+                self.waiting_changed.emit()
                 self.log_signal.emit(i18n.tr("msg_scheduled", target_dt.strftime('%H:%M:%S')), "success")
 
                 while self.is_running:
@@ -147,6 +168,9 @@ class MonitorWorker(QThread):
                     else:
                         self.countdown_signal.emit(i18n.tr("msg_waiting", f"{m:02d}:{s:02d}"))
                     time.sleep(0.1)
+                with self._schedule_lock:
+                    self._waiting_deadline = None
+                self.waiting_changed.emit()
         else:
             self.countdown_signal.emit(i18n.tr("msg_requesting"))
 
@@ -217,13 +241,30 @@ class BrowserLaunchWorker(QThread):
 
     def run(self):
         try:
-            self.auth_manager.launch_browser(detach=self.detach)
+            self.auth_manager.open_login_page(detach=self.detach)
             self.finished_signal.emit(True, i18n.tr("msg_browser_launched"))
         except Exception as e:
             self.finished_signal.emit(False, str(e))
 
 
+class BrowserExtractWorker(QThread):
+    result_signal = pyqtSignal(object)
+
+    def __init__(self, auth_manager):
+        super().__init__()
+        self.auth_manager = auth_manager
+
+    def run(self):
+        try:
+            credentials = self.auth_manager.extract_credentials()
+        except Exception as exc:
+            credentials = {"error": type(exc).__name__}
+        self.result_signal.emit(credentials)
+
+
 class MonitorInterface(QWidget):
+    authentication_requested = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent=parent)
         self.setObjectName("MonitorInterface")
@@ -235,6 +276,9 @@ class MonitorInterface(QWidget):
         self.api_engine = None
         self.auth_manager = None
         self.sibling = None
+        self.worker = None
+        self.ping_worker = None
+        self._ping_is_current = False
 
         title = SubtitleLabel(i18n.tr("monitor_title"))
         title.setStyleSheet("font-size: 26px; font-weight: bold;")
@@ -329,16 +373,45 @@ class MonitorInterface(QWidget):
 
     @property
     def is_running(self):
-        return hasattr(self, 'worker') and self.worker.isRunning()
+        return self.worker is not None and self.worker.isRunning()
+
+    @property
+    def is_checking_session(self):
+        return self.ping_worker is not None and self.ping_worker.isRunning()
+
+    def can_refresh_session(self):
+        return (not (self.sibling and self.sibling.is_running)
+                and (not self.is_running or self.worker.is_waiting))
+
+    def refresh_session(self, cookies, verification_token, student_id):
+        if self.sibling and self.sibling.is_running:
+            return False
+        if self.is_running:
+            if not self.worker.refresh_waiting_session(cookies, verification_token, student_id):
+                return False
+        else:
+            self.api_engine.update_credentials(cookies, verification_token, student_id=student_id)
+        self._ping_is_current = False
+        return True
 
     def lock_start(self):
         self.btn_start.setEnabled(False)
         self.btn_ping.setEnabled(False)
 
     def unlock_start(self):
-        if not self.is_running:
-            self.btn_start.setEnabled(True)
-            self.btn_ping.setEnabled(True)
+        self._refresh_controls()
+
+    def _refresh_controls(self):
+        running = self.is_running
+        checking = self.is_checking_session
+        sibling_busy = self.sibling and self.sibling.is_running
+        self.btn_start.setEnabled(not (running or checking or sibling_busy))
+        self.btn_ping.setEnabled(not (checking or sibling_busy) and (not running or self.worker.is_waiting))
+        if self.sibling:
+            if running or checking:
+                self.sibling.lock_start()
+            else:
+                self.sibling.unlock_start()
 
     def log(self, msg, state="normal"):
         timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
@@ -354,16 +427,13 @@ class MonitorInterface(QWidget):
     def update_btn_text(self, text):
         self.btn_start.setText(text)
 
-    def on_worker_finished(self, success):
-        self.btn_start.setEnabled(True)
-        self.btn_ping.setEnabled(True)
+    def on_worker_finished(self):
         self.btn_stop.setEnabled(False)
         self.btn_start.setText(i18n.tr("btn_start"))
-        if self.sibling:
-            self.sibling.unlock_start()
+        self._refresh_controls()
 
     def start_attack(self):
-        if self.is_running or (hasattr(self, "ping_worker") and self.ping_worker.isRunning()):
+        if self.is_running or self.is_checking_session:
             return
         if self.api_engine is None:
             InfoBar.error(i18n.tr("msg_engine_not_ready"), i18n.tr("msg_goto_auth"), duration=3000, parent=self)
@@ -393,14 +463,6 @@ class MonitorInterface(QWidget):
 
         target_time_str = self.time_input.text().strip()
 
-        if hasattr(self, 'worker') and self.worker.isRunning():
-            self.worker.is_running = False
-            self.worker._stop_event.set()
-            self.worker.quit()
-            self.worker.wait(3000)
-
-        self.btn_start.setEnabled(False)
-        self.btn_ping.setEnabled(False)
         self.btn_stop.setEnabled(True)
 
         waitlist_enabled = self.waitlist_switch.isChecked()
@@ -408,40 +470,38 @@ class MonitorInterface(QWidget):
                                     enable_waitlist=waitlist_enabled, auth_manager=self.auth_manager)
         self.worker.log_signal.connect(self.log)
         self.worker.countdown_signal.connect(self.update_btn_text)
-        self.worker.finished_signal.connect(self.on_worker_finished)
+        self.worker.waiting_changed.connect(self._refresh_controls)
+        self.worker.finished.connect(self.on_worker_finished)
         self.worker.start()
 
-        if self.sibling:
-            self.sibling.lock_start()
+        self._refresh_controls()
         self.api_engine.prefetch_registration_credits(section_list, include_section_details=True)
 
     def stop_attack(self):
-        if hasattr(self, 'worker'):
+        if self.worker is not None:
             self.worker.is_running = False
             self.worker._stop_event.set()
         self.btn_stop.setEnabled(False)
+        self._refresh_controls()
         self.log(i18n.tr("msg_stopping"))
 
     def ping_server(self):
-        if self.is_running or (self.sibling and self.sibling.is_running):
+        if not self.can_refresh_session() or self.is_checking_session:
             return
         if self.api_engine is None:
             InfoBar.error(i18n.tr("msg_engine_not_ready"), i18n.tr("msg_goto_auth"), duration=3000, parent=self)
             return
 
-        self.btn_ping.setEnabled(False)
-        self.btn_start.setEnabled(False)
-        if self.sibling:
-            self.sibling.lock_start()
         self.ping_worker = PingWorker(self.api_engine)
+        self._ping_is_current = True
         self.ping_worker.result_signal.connect(self.on_ping_result)
+        self.ping_worker.finished.connect(self._refresh_controls)
         self.ping_worker.start()
+        self._refresh_controls()
 
     def on_ping_result(self, result):
-        self.btn_ping.setEnabled(True)
-        self.btn_start.setEnabled(True)
-        if self.sibling:
-            self.sibling.unlock_start()
+        if not self._ping_is_current:
+            return
         if result.status == SessionStatus.VALID:
             InfoBar.success(
                 i18n.tr("msg_ping_title"),
@@ -450,25 +510,31 @@ class MonitorInterface(QWidget):
                 parent=self
             )
         else:
-            InfoBar.warning(
+            bar = InfoBar.warning(
                 i18n.tr("msg_ping_title"),
                 i18n.tr("msg_session_expired" if result.status == SessionStatus.EXPIRED
                         else "msg_ping_timeout"),
-                duration=3000,
+                duration=6500,
                 parent=self
             )
+            if result.status == SessionStatus.EXPIRED and self.can_refresh_session():
+                button = PushButton(i18n.tr("tab_auth"))
+                button.clicked.connect(self.authentication_requested)
+                bar.addWidget(button)
 
 
 class AuthInterface(QWidget):
     engine_ready_signal = pyqtSignal(object)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, monitor=None):
         super().__init__(parent=parent)
         self.setObjectName("AuthInterface")
         self.layout = QVBoxLayout(self)
 
         self.layout.setContentsMargins(24, 32, 24, 24)
         self.auth_manager = KeanAuthManager()
+        self.monitor = monitor
+        self.api_engine = None
 
         title = SubtitleLabel(i18n.tr("auth_title"))
         title.setStyleSheet("font-size: 26px; font-weight: bold;")
@@ -485,7 +551,10 @@ class AuthInterface(QWidget):
         self.btn_login = PushButton(FIF.GLOBE, i18n.tr("btn_launch_browser"))
         self.btn_extract = PushButton(FIF.DOWNLOAD, i18n.tr("btn_extract"))
         self.btn_extract.setEnabled(False)
+        self.account_label = BodyLabel()
+        self.account_label.hide()
 
+        card_layout.addWidget(self.account_label)
         card_layout.addWidget(self.btn_login)
         card_layout.addWidget(self.btn_extract)
 
@@ -496,6 +565,9 @@ class AuthInterface(QWidget):
         self.btn_extract.clicked.connect(self.handle_extract)
 
     def handle_login(self):
+        if self.monitor and not self.monitor.can_refresh_session():
+            self._show_busy()
+            return
         self.btn_login.setEnabled(False)
         self.btn_extract.setEnabled(False)
         InfoBar.info(i18n.tr("msg_launching_browser"), i18n.tr("msg_please_wait"), duration=3000, parent=self)
@@ -507,38 +579,63 @@ class AuthInterface(QWidget):
         self.launch_worker.start()
 
     def on_browser_launched(self, success, msg):
+        self.btn_login.setEnabled(True)
         if success:
             self.btn_extract.setEnabled(True)
             InfoBar.success(i18n.tr("msg_browser_ready"), i18n.tr("msg_browser_login_hint"), duration=5000, parent=self)
         else:
-            self.btn_login.setEnabled(True)
             InfoBar.error(i18n.tr("msg_launch_failed"), i18n.tr("msg_browser_error", msg), duration=8000, parent=self)
 
     def handle_extract(self):
-        credentials = self.auth_manager.extract_credentials()
+        if self.monitor and not self.monitor.can_refresh_session():
+            self._show_busy()
+            return
+        self.btn_login.setEnabled(False)
+        self.btn_extract.setEnabled(False)
+        self.extract_worker = BrowserExtractWorker(self.auth_manager)
+        self.extract_worker.result_signal.connect(self.on_credentials_extracted)
+        self.extract_worker.start()
+
+    def _show_busy(self):
+        InfoBar.warning(i18n.tr("auth_title"), i18n.tr("msg_auth_busy"), duration=5000, parent=self)
+
+    def on_credentials_extracted(self, credentials):
+        self.btn_login.setEnabled(True)
+        self.btn_extract.setEnabled(True)
         if "error" in credentials:
             InfoBar.error(i18n.tr("msg_extract_failed"), credentials["error"], duration=5000, parent=self)
             return
 
         student_id = credentials["student_id"]
-
-        api_engine = KeanApiClient(
-            cookies_dict=credentials["cookies"],
-            verification_token=credentials["verification_token"],
-            student_id=student_id,
-            registration_reader=DegreePlanRegistrationReader()
-        )
+        cookies = credentials["cookies"]
+        token = credentials["verification_token"]
+        refreshing = self.api_engine is not None
+        if not refreshing:
+            self.api_engine = KeanApiClient(cookies, token, student_id, DegreePlanRegistrationReader())
+            self.engine_ready_signal.emit(self.api_engine)
+        elif str(student_id) != str(self.api_engine.student_id):
+            InfoBar.error(i18n.tr("msg_extract_failed"),
+                          i18n.tr("msg_auth_same_account", self.api_engine.student_id),
+                          duration=6000, parent=self)
+            return
+        elif self.monitor:
+            if not self.monitor.refresh_session(cookies, token, student_id):
+                self._show_busy()
+                return
+        else:
+            self.api_engine.update_credentials(cookies, token, student_id=student_id)
 
         config = load_config()
         if not config.get("Settings", {}).get("KeepBrowserOpen", False):
             self.auth_manager.close_browser()
 
-        self.btn_extract.setText(i18n.tr("msg_engine_ready", student_id))
         self.btn_extract.setEnabled(False)
-        self.btn_login.setEnabled(False)
+        self.btn_login.setText(i18n.tr("btn_relogin"))
+        self.account_label.setText(i18n.tr("msg_engine_ready", student_id))
+        self.account_label.show()
 
-        self.engine_ready_signal.emit(api_engine)
-        InfoBar.success(i18n.tr("msg_auth_success"), i18n.tr("msg_auth_success_detail", student_id),
+        status = "msg_auth_refreshed" if refreshing else "msg_auth_success"
+        InfoBar.success(i18n.tr(status), i18n.tr("msg_engine_ready", student_id),
                         position=InfoBarPosition.TOP, duration=5000, parent=self)
 
 
@@ -579,7 +676,7 @@ class AboutInterface(ScrollArea):
         info_layout.setSpacing(5)
         name_lbl = SubtitleLabel("KeanSeatsCatcher")
         name_lbl.setStyleSheet("font-size: 22px; font-weight: bold;")
-        ver_lbl = BodyLabel("Version 1.3.2")
+        ver_lbl = BodyLabel("Version 1.3.3")
         ver_lbl.setStyleSheet("color: #a0a0a0;")
         info_layout.addWidget(name_lbl)
         info_layout.addWidget(ver_lbl)
@@ -680,22 +777,27 @@ class KeanSeatsCatcherApp(FluentWindow):
 
         self.monitor_interface = MonitorInterface(self)
         self.autocatch_interface = AutoCatchInterface(self)
+        self.lookup_interface = SectionLookupInterface(self)
         self.catches_interface = MyCatchesInterface(self)
-        self.auth_interface = AuthInterface(self)
+        self.auth_interface = AuthInterface(self, monitor=self.monitor_interface)
         self.settings_interface = SettingsInterface(self)
         self.about_interface = AboutInterface(self)
 
         self.auth_interface.engine_ready_signal.connect(self.monitor_interface.set_api_engine)
         self.auth_interface.engine_ready_signal.connect(self.autocatch_interface.set_api_engine)
+        self.auth_interface.engine_ready_signal.connect(self.lookup_interface.set_api_engine)
         self.auth_interface.engine_ready_signal.connect(self.catches_interface.bind_engine)
-        self.autocatch_interface.set_auth_manager(self.auth_interface.auth_manager)
-        self.monitor_interface.auth_manager = self.auth_interface.auth_manager
+        self.monitor_interface.authentication_requested.connect(lambda: self.switchTo(self.auth_interface))
+        recovery_auth = KeanAuthManager()
+        self.autocatch_interface.set_auth_manager(recovery_auth)
+        self.monitor_interface.auth_manager = recovery_auth
 
         self.monitor_interface.sibling = self.autocatch_interface
         self.autocatch_interface.sibling = self.monitor_interface
 
         self.addSubInterface(self.monitor_interface, FIF.VIEW, i18n.tr("tab_monitor"))
         self.addSubInterface(self.autocatch_interface, FIF.ZOOM, i18n.tr("tab_autocatch"))
+        self.addSubInterface(self.lookup_interface, FIF.SEARCH, i18n.tr("tab_lookup"))
         self.addSubInterface(self.catches_interface, FIF.HISTORY, i18n.tr("tab_catches"))
         self.addSubInterface(self.auth_interface, FIF.FINGERPRINT, i18n.tr("tab_auth"))
         self.addSubInterface(self.settings_interface, FIF.SETTING, i18n.tr("tab_settings"), position=NavigationItemPosition.BOTTOM)

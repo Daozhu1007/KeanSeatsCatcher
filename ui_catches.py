@@ -4,7 +4,8 @@ from datetime import datetime
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QAbstractItemView, QHeaderView, QHBoxLayout, QTableWidgetItem, QVBoxLayout, QWidget
-from qfluentwidgets import BodyLabel, ComboBox, SubtitleLabel, TableWidget, TextEdit
+from qfluentwidgets import (BodyLabel, ComboBox, FluentIcon as FIF, InfoBar, MessageBox, PushButton,
+                            SubtitleLabel, TableWidget, TextEdit)
 
 from catch_history import CatchHistory
 from i18n import i18n
@@ -44,6 +45,9 @@ class MyCatchesInterface(QWidget):
         self.accounts = ComboBox()
         self.accounts.setAccessibleName(i18n.tr("catches_student"))
         header.addWidget(self.accounts)
+        self.btn_delete = PushButton(FIF.DELETE, i18n.tr("catches_delete"))
+        self.btn_delete.setEnabled(False)
+        header.addWidget(self.btn_delete)
         layout.addLayout(header)
         hint = BodyLabel(i18n.tr("catches_hint"))
         hint.setWordWrap(True)
@@ -76,6 +80,7 @@ class MyCatchesInterface(QWidget):
         layout.addWidget(self.details, 2)
         self.accounts.currentIndexChanged.connect(self._populate)
         self.table.itemSelectionChanged.connect(self._show_details)
+        self.btn_delete.clicked.connect(self._delete_selected)
         self.history_changed.connect(self.refresh)
 
     def bind_engine(self, engine):
@@ -131,12 +136,37 @@ class MyCatchesInterface(QWidget):
             widget.setVisible(bool(self.visible_records))
         self._show_details()
 
+    def _selected_record(self):
+        selected = self.table.selectionModel().selectedRows()
+        return self.visible_records[selected[0].row()] if selected else None
+
+    def _delete_selected(self):
+        record = self._selected_record()
+        if record is None:
+            return
+        confirm = MessageBox(
+            i18n.tr("catches_delete_title"),
+            i18n.tr("catches_delete_confirm", record["section_id"], _display(record["student_id"])),
+            self.window(),
+        )
+        confirm.yesButton.setText(i18n.tr("catches_delete"))
+        confirm.cancelButton.setText(i18n.tr("catches_delete_cancel"))
+        if not confirm.exec():
+            return
+        try:
+            self.history.delete(record)
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            InfoBar.error(i18n.tr("catches_delete_title"), i18n.tr("log_history_error", type(exc).__name__),
+                          duration=5000, parent=self)
+            return
+        self.refresh()
+
     def _show_details(self):
-        row = self.table.currentRow()
-        if not 0 <= row < len(self.visible_records):
+        record = self._selected_record()
+        self.btn_delete.setEnabled(record is not None)
+        if record is None:
             self.details.clear()
             return
-        record = self.visible_records[row]
         credits = record["sent_credits"]
         sent = _display(credits.get("value")) if credits["status"] == "included" else i18n.tr(
             "credits_" + credits["status"])

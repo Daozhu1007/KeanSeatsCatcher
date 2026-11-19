@@ -11,6 +11,7 @@ from registration_reader import DegreePlanRegistrationReader
 from registration_state import SectionStatus as S
 from test_registration import client, events, response, snapshot
 from test_registration_reader import course
+from ui_catches import MyCatchesInterface
 from ui_main import MonitorInterface
 
 
@@ -141,6 +142,38 @@ def test_legacy_recovery_retains_timings_and_knows_when_credits_were_omitted(tmp
     assert all(record["student_id"] is None and record["confirmed_at"] == time for record in (a, b))
     assert [trace["round_id"] for trace in a["requests"]] == [1, 1, 2]
     assert all(trace["elapsed_ms"] == 145.6 and "response" not in trace for trace in a["requests"])
+    log = path.read_bytes()
+    assert history.delete(a)
+    assert CatchHistory(history.path).records() == [b]
+    assert path.read_bytes() == log
+
+
+def test_my_catches_deletes_only_the_selected_local_record(tmp_path, monkeypatch, qt_app):
+    history = CatchHistory()
+    record = dict(student_id="student-a", term_id="2027SP", section_id="fixture", course_name="Fixture",
+                  confirmed_at="2026-11-19T07:00:00.123+08:00", source="live", source_log="run.jsonl",
+                  sent_credits={"status": "unrecorded"}, requests=[])
+    other_account = dict(record, student_id="student-b")
+    other_term = dict(record, term_id="2027FA")
+    history.save([record, other_account, other_term])
+    log = tmp_path / record["source_log"]
+    log.write_bytes(b'{"event":"verification"}\n')
+
+    page = MyCatchesInterface()
+    dialog = Mock()
+    dialog.exec.side_effect = [False, True]
+    monkeypatch.setattr("ui_catches.MessageBox", Mock(return_value=dialog))
+    page.refresh()
+    page.accounts.setCurrentIndex(page.accounts.findData("student-a"))
+    page.table.selectRow(page.visible_records.index(record))
+    assert page.btn_delete.isEnabled()
+    page.btn_delete.click()
+    assert len(history.records()) == 3
+    page.btn_delete.click()
+    assert CatchHistory(history.path).records() == [other_term, other_account]
+    assert page.visible_records == [other_term]
+    assert log.read_bytes() == b'{"event":"verification"}\n'
+    page.close()
 
 
 def test_dashboard_asks_for_credits_after_editing_finishes(qt_app):

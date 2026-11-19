@@ -7,22 +7,29 @@ from registration_state import (RegistrationRecord, RegistrationSnapshot, Sectio
                                 section_credit_limits, valid_credits)
 
 class DegreePlanRegistrationReader:
-    def _current(self, client, section_ids, session=None):
+    def _current(self, client, section_ids, operation, session=None):
         return client._request(
-            "registration_read" if session is None else "planned_credit_lookup",
-            "GET", f"{client.base_url}/Current", section_ids, session=session,
+            operation, "GET", f"{client.base_url}/Current", section_ids, session=session,
             params={"studentId": str(client.student_id)},
             headers={"Cache-Control": "no-cache"}, timeout=(1.5, 8))
 
     def read(self, client, section_ids):
-        response = self._current(client, section_ids)
+        return self._read(client, section_ids, "registration_read", section_terms=client.section_terms,
+                          resolve_term=client.lookup_section_term)
+
+    def read_for_lookup(self, client, section_ids, section_terms, session):
+        return self._read(client, section_ids, "account_registration_lookup",
+                          session=session, section_terms=section_terms)
+
+    def _read(self, client, section_ids, operation, *, session=None, section_terms=None, resolve_term=None):
+        response = self._current(client, section_ids, operation, session)
         if response.status_code != 200:
             return RegistrationSnapshot(reason=f"registration_http_{response.status_code}")
         return self.parse(response.json(), client.student_id, section_ids,
-                          section_terms=client.section_terms, resolve_term=client.lookup_section_term)
+                          section_terms=section_terms, resolve_term=resolve_term)
 
     def read_credits(self, client, section_ids, session):
-        response = self._current(client, section_ids, session)
+        response = self._current(client, section_ids, "planned_credit_lookup", session)
         if response.status_code != 200:
             return {}
         data = response.json()

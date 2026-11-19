@@ -35,6 +35,8 @@ def test_gui_extraction_enables_scoped_reader(tmp_path, monkeypatch, qt_app):
     engines = []
     widget.engine_ready_signal.connect(engines.append)
     widget.handle_extract()
+    assert widget.extract_worker.wait(1000)
+    qt_app.processEvents()
     assert isinstance(engines[0].registration_reader, DegreePlanRegistrationReader)
     assert not widget.findChildren(ui_main.LineEdit)
     widget.close()

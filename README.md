@@ -61,9 +61,10 @@ ui_main.py  →  PyQt6 + qfluentwidgets
 | **Memory Safety** | Log widget capped at 1 000 lines; minimum 1 s polling interval to prevent CPU thrashing |
 | **Recovery Counter** | Status bar shows `Polling (Round #1245) \| Recoveries: 3...` for situational awareness |
 | **Waitlist Fallback** | Requires a scoped Closed rejection and a verified record showing the Section is not registered |
-| **Session Check** | Valid / expired / unknown session status, with response time |
+| **Session Check** | Check the session while Dashboard is idle or counting down. Use Authentication to sign in again with the same account before the scheduled time. |
+| **Section Lookup** | Read course details, term, credits, seat counts, waitlist availability and account registration status for one or more Section IDs. |
 | **Event Logs** | JSONL audit trail with requests, redacted responses, per-Section results and timings in `~/.keanseatscatcher/logs` |
-| **My Catches** | Confirmed catches with request details, filterable by Student ID. History lives in `~/.keanseatscatcher/catches.sqlite3` across Portable upgrades. |
+| **My Catches** | Confirmed catches with request details, account filtering and individual record deletion. History lives in `~/.keanseatscatcher/catches.sqlite3` across Portable upgrades. |
 
 ### 2. CLI Headless Mode (Linux Server · Cloud Phantom)
 

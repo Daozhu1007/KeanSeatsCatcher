@@ -65,6 +65,7 @@ class KeanApiClient:
             "x-requested-with": "XMLHttpRequest",
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0",
         })
+        self._credentials_lock = threading.Lock()
         self.registration_reader = registration_reader
         self.section_terms = {}
         self._section_credit_limits = {}
@@ -91,9 +92,19 @@ class KeanApiClient:
     def update_credentials(self, cookies_dict, verification_token, student_id=None):
         if student_id is not None and str(student_id) != str(self.student_id):
             raise ValueError("Recovered account differs from the active registration account")
-        self.session.cookies.clear()
-        self.session.cookies.update(cookies_dict)
-        self.session.headers["__requestverificationtoken"] = verification_token
+        with self._credentials_lock:
+            self.session.cookies.clear()
+            self.session.cookies.update(cookies_dict)
+            self.session.headers["__requestverificationtoken"] = verification_token
+
+    def new_read_session(self):
+        """Snapshot credentials for an independent read."""
+        session = requests.Session()
+        session.trust_env = False
+        with self._credentials_lock:
+            session.headers.update(self.session.headers)
+            session.cookies.update(self.session.cookies.copy())
+        return session
 
     def _log(self, msg, level="normal"):
         print(f"[{level.upper()}] {msg}")
@@ -218,11 +229,11 @@ class KeanApiClient:
             self._log(f"[{kind}{reference}] {message[:2000]}",
                       "error" if level == "error" or kind in ("Error", "Warning") else "normal")
 
-    def check_session(self):
+    def check_session(self, *, session=None):
         start = time.perf_counter()
         status, reason = SessionStatus.UNKNOWN, "unrecognized_authenticated_page"
         try:
-            resp = self._request("session_check", "GET", self.base_url,
+            resp = self._request("session_check", "GET", self.base_url, session=session,
                                  headers={"Cache-Control": "no-cache"}, timeout=(1.5, 8))
             if resp.status_code == 200:
                 page = _PageEvidence()
@@ -243,7 +254,7 @@ class KeanApiClient:
         """Compatibility alias; returns a tri-state SessionCheck, not a ping."""
         return self.check_session()
 
-    def _section_details(self, section_id, operation, timeout, *, session=None):
+    def _section_details(self, section_id, operation, timeout, *, session=None, cache_details=True):
         root = "/".join(self.base_url.split("/")[:3])
         sid = str(section_id)
         path = "/Student/Student/Courses/SectionDetails" if session is None else "/Student/Courses/SectionDetails"
@@ -261,6 +272,8 @@ class KeanApiClient:
         returned_id = data.get("Id")
         if returned_id is not None and str(returned_id) != sid:
             return None
+        if not cache_details:
+            return data if returned_id is not None else None
         term = data.get("TermId")
         if session is None and returned_id is not None and isinstance(term, str) and term.strip():
             self.section_terms[sid] = term
@@ -284,6 +297,33 @@ class KeanApiClient:
                 else:
                     self._catalog_metadata.setdefault(sid, details)
         return data
+
+    def lookup_sections(self, section_ids):
+        """Read catalog details and account records without updating catch state."""
+        ids = list(dict.fromkeys(map(str, section_ids)))
+        details = {}
+        snapshot = RegistrationSnapshot()
+        try:
+            with self.new_read_session() as session:
+                for sid in ids:
+                    try:
+                        section = self._section_details(
+                            sid, "section_lookup", (1.5, 8), session=session, cache_details=False)
+                    except (requests.exceptions.RequestException, ValueError):
+                        continue
+                    if section is not None:
+                        details[sid] = section
+
+                read = getattr(self.registration_reader, "read_for_lookup", None)
+                if ids and read is not None:
+                    terms = {sid: section["TermId"] for sid, section in details.items()
+                             if isinstance(section.get("TermId"), str) and section["TermId"].strip()}
+                    snapshot = read(self, ids, terms, session)
+        except SessionExpiredError:
+            snapshot = RegistrationSnapshot(reason="session_expired")
+        except (requests.exceptions.RequestException, ValueError):
+            snapshot = RegistrationSnapshot(reason="registration_read_failed")
+        return details, snapshot
 
     def _credits_for(self, section_id):
         planned = self._planned_credits.get(section_id)

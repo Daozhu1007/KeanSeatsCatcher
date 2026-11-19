@@ -18,6 +18,15 @@ class KeanAuthManager:
         self.driver = None
         self.login_url = "https://kean-ss.colleague.elluciancloud.com/Student/Planning/DegreePlans"
 
+    def open_login_page(self, detach=False):
+        if self.driver is not None:
+            try:
+                self.driver.get(self.login_url)
+                return
+            except WebDriverException:
+                self.close_browser()
+        self.launch_browser(detach=detach)
+
     def launch_browser(self, headless: bool = False, detach: bool = False):
         """
         Per-browser 15-second timeout prevents a hung driver download

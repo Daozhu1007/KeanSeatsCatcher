@@ -19,6 +19,12 @@ def sent_credits(requests, section_id):
     return {"status": "unrecorded"}
 
 
+def _record_key(record):
+    student = record.get("student_id")
+    identity = ["student", student] if student else ["run", record["run_id"]]
+    return json.dumps([*identity, record.get("term_id"), record["section_id"]], ensure_ascii=False)
+
+
 class CatchHistory:
     def __init__(self, path=None):
         self.path = Path(path) if path is not None else data_directory() / "catches.sqlite3"
@@ -30,11 +36,8 @@ class CatchHistory:
     def save(self, records):
         rows = []
         for record in records:
-            student = record.get("student_id")
-            identity = ["student", student] if student else ["run", record["run_id"]]
-            key = json.dumps([*identity, record.get("term_id"), record["section_id"]], ensure_ascii=False)
             confirmed = datetime.fromisoformat(record["confirmed_at"]).timestamp()
-            rows.append((key, confirmed, json.dumps(record, ensure_ascii=False)))
+            rows.append((_record_key(record), confirmed, json.dumps(record, ensure_ascii=False)))
         if not rows:
             return False
         with closing(self._connect()) as connection, connection:
@@ -53,6 +56,14 @@ class CatchHistory:
         with closing(self._connect()) as connection:
             return [json.loads(row[0]) for row in connection.execute(
                 "SELECT record FROM catches ORDER BY confirmed DESC, id")]
+
+    def delete(self, record):
+        if not self.path.exists():
+            return False
+        with closing(self._connect()) as connection, connection:
+            deleted = connection.execute("DELETE FROM catches WHERE id = ? AND record = ?",
+                                         (_record_key(record), json.dumps(record, ensure_ascii=False)))
+            return deleted.rowcount == 1
 
     def import_legacy(self, path, course_details=None):
         """Recover only attempted, verified Sections from a pre-body JSONL log."""

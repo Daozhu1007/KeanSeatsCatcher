@@ -5,10 +5,11 @@ from unittest.mock import Mock
 
 import pytest
 import requests
+from PyQt6.QtTest import QTest
 
 from auto_catch_worker import AutoCatchWorker, STATE_IDLE
 from cloud_worker import CloudWorker
-from ui_main import MonitorWorker, PingWorker
+from ui_main import InfoBar, KeanSeatsCatcherApp, MonitorWorker, PingWorker
 from registration_state import SessionStatus
 from test_registration import client, response, snapshot, events, S
 from worker_session import recover_session
@@ -132,13 +133,119 @@ def test_repeated_expiration_does_not_loop_reauthentication(tmp_path):
     assert not api.all_registered(["a"])
 
 
-def test_session_check_worker_preserves_three_state_result(tmp_path):
-    api = client(tmp_path, [requests.ReadTimeout()])
+def test_session_check_worker_preserves_three_state_result(tmp_path, monkeypatch):
+    api = client(tmp_path, [])
+    monkeypatch.setattr(requests.Session, "request", Mock(side_effect=requests.ReadTimeout()))
     worker = PingWorker(api)
     results = []
     worker.result_signal.connect(results.append)
     worker.run()
     assert results[0].status == SessionStatus.UNKNOWN
+    api.session.request.assert_not_called()
+
+
+def test_scheduled_dashboard_uses_refreshed_credentials_without_waiting_for_session_check(
+    tmp_path, monkeypatch, qt_app
+):
+    clock = [datetime.datetime(2026, 11, 19, 12)]
+    monkeypatch.setattr("ui_main.datetime", SimpleNamespace(datetime=SimpleNamespace(now=lambda: clock[0])))
+    monkeypatch.setattr(InfoBar, "success", Mock())
+    monkeypatch.setattr(InfoBar, "warning", Mock())
+    wrong_account = Mock()
+    monkeypatch.setattr(InfoBar, "error", wrong_account)
+
+    window = KeanSeatsCatcherApp()
+    monitor, auth = window.monitor_interface, window.auth_interface
+    auth.auth_manager = Mock()
+    original = dict(cookies={"cookie": "old"}, verification_token="first-token", student_id="fixture-student")
+    refreshed = dict(original, cookies={"cookie": "new"}, verification_token="new-token")
+    auth.on_credentials_extracted(original)
+    api = auth.api_engine
+    api.prefetch_registration_credits = Mock()
+    api.registration_reader = client(tmp_path, [], [snapshot(a=S.REGISTERED, b=S.REGISTERED)]).registration_reader
+
+    check_started, release_check = threading.Event(), threading.Event()
+    add_started, release_add = threading.Event(), threading.Event()
+    checks, adds = [], []
+
+    def check(session, method, url, **kwargs):
+        checks.append((session, method, url))
+        if len(checks) == 2:
+            check_started.set()
+            release_check.wait(5)
+            session.cookies.set("cookie", "check-cookie")
+        return response(status=401)
+
+    def send(method, url, **kwargs):
+        adds.append((method, url, kwargs["json"], api.session.headers["__requestverificationtoken"],
+                     api.session.cookies.get("cookie")))
+        add_started.set()
+        release_add.wait(5)
+        raise requests.ReadTimeout()
+
+    monkeypatch.setattr(requests.Session, "request", check)
+    monkeypatch.setattr(api.session, "request", send)
+    monitor.section_input.setText("a, b")
+    monitor.time_input.setText("12:00:10")
+    monitor.interval_input.setText("7")
+    monitor.waitlist_switch.setChecked(True)
+
+    def wait_for(predicate):
+        for _ in range(100):
+            if predicate():
+                return True
+            QTest.qWait(10)
+        return predicate()
+
+    try:
+        monitor.btn_start.click()
+        scheduled = monitor.worker
+        assert wait_for(lambda: scheduled.is_waiting and monitor.btn_ping.isEnabled())
+        assert not window.autocatch_interface.btn_start.isEnabled()
+        monitor.btn_ping.click()
+        assert monitor.ping_worker.wait(1000)
+        qt_app.processEvents()
+        InfoBar.warning.assert_called_once()
+
+        auth.on_credentials_extracted(dict(refreshed, student_id="different-student"))
+        wrong_account.assert_called_once()
+        assert api.session.headers["__requestverificationtoken"] == original["verification_token"]
+
+        auth.auth_manager.extract_credentials.return_value = refreshed
+        auth.handle_extract()
+        assert auth.extract_worker.wait(1000)
+        qt_app.processEvents()
+        assert auth.api_engine is monitor.api_engine is scheduled.api_engine is api
+        assert monitor.worker is scheduled
+        assert (scheduled.section_ids, scheduled.interval, scheduled.target_time_str, scheduled.enable_waitlist) == (
+            ["a", "b"], 7, "12:00:10", True)
+        assert monitor.btn_ping.isEnabled()
+
+        monitor.btn_ping.click()
+        assert check_started.wait(1)
+        assert not add_started.is_set()
+        clock[0] = clock[0].replace(second=10)
+        assert wait_for(lambda: add_started.is_set() and not monitor.btn_ping.isEnabled())
+        assert not release_check.is_set()
+        method, url, payload, token, cookie = adds[0]
+        assert (method, url) == ("POST", api.base_url + "/RegisterSections")
+        assert [(item["SectionId"], item["Action"]) for item in payload["sectionRegistrations"]] == [
+            ("a", "Add"), ("b", "Add")]
+        assert (token, cookie) == ("new-token", "new")
+        assert all(session is not api.session and method == "GET" for session, method, _ in checks)
+
+        auth.on_credentials_extracted(dict(refreshed, verification_token="late"))
+        assert api.session.headers["__requestverificationtoken"] == "new-token"
+    finally:
+        release_check.set()
+        release_add.set()
+        if monitor.worker is not None:
+            monitor.stop_attack()
+            assert monitor.worker.wait(3000)
+        if monitor.ping_worker is not None:
+            assert monitor.ping_worker.wait(3000)
+        qt_app.processEvents()
+        window.close()
 
 
 def test_stop_during_availability_does_not_send_add(tmp_path):
