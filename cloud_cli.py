@@ -75,8 +75,7 @@ def load_session_from_file(filepath, logger):
     """
     Load credentials from a session JSON file exported by export_session.py.
 
-    Expected format:
-        {"cookies": {...}, "verification_token": "...", "student_id": "..."}
+    The cookies field accepts browser records or a legacy name-to-value mapping.
     """
     try:
         with open(filepath, 'r', encoding='utf-8') as f:

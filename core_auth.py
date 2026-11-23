@@ -157,8 +157,6 @@ class KeanAuthManager:
         except (WebDriverException, InvalidSessionIdException):
             return {"error": i18n.tr("err_browser_disconnected_cookies")}
 
-        cookies_dict = {cookie['name']: cookie['value'] for cookie in cookies_list}
-
         js_script = """
         let token = null;
         let tokenInput = document.querySelector('input[name="__RequestVerificationToken"]');
@@ -216,7 +214,7 @@ class KeanAuthManager:
             user_agent = "unknown"
 
         credentials = {
-            "cookies": cookies_dict,
+            "cookies": cookies_list,
             "verification_token": verification_token,
             "student_id": student_id,
             "user_agent": user_agent

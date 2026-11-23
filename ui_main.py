@@ -83,9 +83,7 @@ class PingWorker(QThread):
         self.api_engine = api_engine
 
     def run(self):
-        with self.api_engine.new_read_session() as session:
-            result = self.api_engine.check_session(session=session)
-        self.result_signal.emit(result)
+        self.result_signal.emit(self.api_engine.check_session())
 
 
 class MonitorWorker(QThread):
@@ -392,6 +390,8 @@ class MonitorInterface(QWidget):
         else:
             self.api_engine.update_credentials(cookies, verification_token, student_id=student_id)
         self._ping_is_current = False
+        if self.sibling:
+            self.sibling.clear_relogin_status()
         return True
 
     def lock_start(self):
@@ -676,7 +676,7 @@ class AboutInterface(ScrollArea):
         info_layout.setSpacing(5)
         name_lbl = SubtitleLabel("KeanSeatsCatcher")
         name_lbl.setStyleSheet("font-size: 22px; font-weight: bold;")
-        ver_lbl = BodyLabel("Version 1.3.3")
+        ver_lbl = BodyLabel("Version 1.3.4")
         ver_lbl.setStyleSheet("color: #a0a0a0;")
         info_layout.addWidget(name_lbl)
         info_layout.addWidget(ver_lbl)

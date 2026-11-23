@@ -71,20 +71,23 @@ class CloudWorker(threading.Thread):
         Returns True if recovery succeeded and the worker should continue.
         Returns False if recovery failed and the worker should stop.
         """
-        logger.warning("Session expired. Initiating automatic re-authentication...")
-
-        if self.auth_manager is None or self.recovery_count >= 1 or not self.is_running:
-            logger.error("Session recovery unavailable or already attempted. Stopping; please log in again.")
+        if self.auth_manager is None:
+            logger.error("Session expired. Sign in again and restart with a fresh --load-session file.")
+            self.is_running = False
+            return False
+        if self.recovery_count >= 1 or not self.is_running:
+            logger.error("Session expired. Sign in again and restart Auto-Catch.")
             self.is_running = False
             return False
 
+        logger.warning("Session expired. Initiating automatic re-authentication...")
         self.recovery_count += 1
         if recover_session(self.api_engine, self.auth_manager, headless=True, section_ids=self.section_ids):
             logger.info("Session recovered (#%d). Resuming Auto-Catch...",
                         self.recovery_count)
             return True
         else:
-            logger.error("Session recovery could not be verified. Stopping; please log in again.")
+            logger.error("Session recovery could not be verified. Sign in again and restart Auto-Catch.")
             self.is_running = False
             return False
 
@@ -108,10 +111,11 @@ class CloudWorker(threading.Thread):
 
             found_section = False
             session_lost = False
+            poll_results = {}
             pending = self.api_engine.pending_sections(self.section_ids)
             try:
                 for sec_id in self.api_engine.poll_available_sections(
-                        pending, self.enable_waitlist, lambda: self.is_running):
+                        pending, self.enable_waitlist, lambda: self.is_running, results=poll_results):
                     found_section = True
                     logger.info("Seat found! Section %s", sec_id)
                     self.api_engine.execute_full_attack(
@@ -121,8 +125,10 @@ class CloudWorker(threading.Thread):
             except SessionExpiredError:
                 session_lost = True
 
+            unavailable = [sid for sid, available in poll_results.items() if available is None]
             self.api_engine._event("poll_finished", worker="cloud", poll_round=round_count,
-                                   session_expired=session_lost, found_section=found_section)
+                                   session_expired=session_lost, found_section=found_section,
+                                   unavailable_sections=unavailable)
             if session_lost:
                 if not self._recover_session():
                     break
@@ -141,6 +147,9 @@ class CloudWorker(threading.Thread):
                     break
                 continue
 
+            if unavailable:
+                logger.warning("Availability check temporarily unavailable for %s. Retrying at the configured interval.",
+                               ", ".join(unavailable))
             if success:
                 logger.info("SUCCESS: %s", msg)
                 self._send_webhook(
@@ -148,7 +157,7 @@ class CloudWorker(threading.Thread):
                 self.is_running = False
             elif found_section:
                 logger.info("Registration status: %s", msg)
-            elif pending:
+            elif pending and all(poll_results.get(sid) is False for sid in pending):
                 logger.debug("No open seats found in this poll.")
 
             pending = self.api_engine.pending_sections(self.section_ids)

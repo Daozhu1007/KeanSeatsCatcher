@@ -7,9 +7,11 @@ import pytest
 import requests
 from PyQt6.QtTest import QTest
 
-from auto_catch_worker import AutoCatchWorker, STATE_IDLE
+from auto_catch_worker import AutoCatchWorker, STATE_IDLE, STATE_UNAVAILABLE
 from cloud_worker import CloudWorker
 from ui_main import InfoBar, KeanSeatsCatcherApp, MonitorWorker, PingWorker
+from ui_autocatch import AutoCatchInterface
+from i18n import i18n
 from registration_state import SessionStatus
 from test_registration import client, response, snapshot, events, S
 from worker_session import recover_session
@@ -88,9 +90,11 @@ def test_workers_stop_cleanly_on_expiration_without_auth_manager(tmp_path, worke
     assert events(api)[-1]["event"] == "worker_stopped"
 
 
-def test_dashboard_recovery_keeps_unknown_attempt_and_verifies_before_retry(tmp_path):
+def test_dashboard_recovery_keeps_unknown_attempt_and_verifies_before_retry(tmp_path, monkeypatch):
     valid = '<a href="/Student/Account/Logout">Out</a><input name="__RequestVerificationToken" value="fixture">'
-    api = client(tmp_path, [response(status=401), response(text=valid)], [snapshot(a=S.REGISTERED)])
+    api = client(tmp_path, [response(status=401)], [snapshot(a=S.REGISTERED)])
+    check = Mock(return_value=response(text=valid))
+    monkeypatch.setattr(requests.Session, "request", check)
     auth = Mock()
     auth.silent_relogin.return_value = {"cookies": {}, "verification_token": "new",
                                       "student_id": "fixture-student"}
@@ -98,12 +102,14 @@ def test_dashboard_recovery_keeps_unknown_attempt_and_verifies_before_retry(tmp_
     worker.run()
     assert api.all_registered(["a"])
     auth.silent_relogin.assert_called_once()
-    assert api.session.request.call_count == 2  # Add, session check; no repeated Add.
+    api.session.request.assert_called_once()  # Initial Add; no repeated Add.
+    check.assert_called_once()
 
 
 @pytest.mark.parametrize("status", [403, 503])
-def test_recovery_is_not_claimed_when_session_check_unknown(tmp_path, status):
-    api = client(tmp_path, [response(status=status)])
+def test_recovery_is_not_claimed_when_session_check_unknown(tmp_path, monkeypatch, status):
+    api = client(tmp_path, [])
+    monkeypatch.setattr(requests.Session, "request", Mock(return_value=response(status=status)))
     auth = Mock()
     auth.silent_relogin.return_value = {"cookies": {}, "verification_token": "new",
                                       "student_id": "fixture-student"}
@@ -119,10 +125,11 @@ def test_recovery_cannot_mix_account_results(tmp_path):
     assert api.session.request.call_count == 0
 
 
-def test_repeated_expiration_does_not_loop_reauthentication(tmp_path):
+def test_repeated_expiration_does_not_loop_reauthentication(tmp_path, monkeypatch):
     valid = '<a href="/Student/Account/Logout">Out</a><input name="__RequestVerificationToken" value="fixture">'
-    api = client(tmp_path, [response(status=401), response(text=valid)],
+    api = client(tmp_path, [response(status=401)],
                  [__import__("core_api").SessionExpiredError("session_expired")])
+    monkeypatch.setattr(requests.Session, "request", Mock(return_value=response(text=valid)))
     auth = Mock()
     auth.silent_relogin.return_value = {"cookies": {}, "verification_token": "new",
                                       "student_id": "fixture-student"}
@@ -157,8 +164,9 @@ def test_scheduled_dashboard_uses_refreshed_credentials_without_waiting_for_sess
     window = KeanSeatsCatcherApp()
     monitor, auth = window.monitor_interface, window.auth_interface
     auth.auth_manager = Mock()
-    original = dict(cookies={"cookie": "old"}, verification_token="first-token", student_id="fixture-student")
-    refreshed = dict(original, cookies={"cookie": "new"}, verification_token="new-token")
+    cookie_name = "studentselfservice_production"
+    original = dict(cookies={cookie_name: "old"}, verification_token="first-token", student_id="fixture-student")
+    refreshed = dict(original, cookies={cookie_name: "new"}, verification_token="new-token")
     auth.on_credentials_extracted(original)
     api = auth.api_engine
     api.prefetch_registration_credits = Mock()
@@ -173,12 +181,14 @@ def test_scheduled_dashboard_uses_refreshed_credentials_without_waiting_for_sess
         if len(checks) == 2:
             check_started.set()
             release_check.wait(5)
-            session.cookies.set("cookie", "check-cookie")
+            session.cookies.set(cookie_name, "check-cookie", domain="kean-ss.colleague.elluciancloud.com")
+            return response(text='<a href="/Student/Account/Logout">Out</a>'
+                                 '<input name="__RequestVerificationToken" value="check-token">')
         return response(status=401)
 
     def send(method, url, **kwargs):
         adds.append((method, url, kwargs["json"], api.session.headers["__requestverificationtoken"],
-                     api.session.cookies.get("cookie")))
+                     api.session.cookies.get(cookie_name)))
         add_started.set()
         release_add.wait(5)
         raise requests.ReadTimeout()
@@ -236,6 +246,9 @@ def test_scheduled_dashboard_uses_refreshed_credentials_without_waiting_for_sess
 
         auth.on_credentials_extracted(dict(refreshed, verification_token="late"))
         assert api.session.headers["__requestverificationtoken"] == "new-token"
+        release_check.set()
+        assert monitor.ping_worker.wait(1000)
+        assert api.session.cookies.get(cookie_name) == "new"
     finally:
         release_check.set()
         release_add.set()
@@ -257,6 +270,63 @@ def test_stop_during_availability_does_not_send_add(tmp_path):
     api.check_section_status = stop_after_poll
     worker.run()
     assert api.session.request.call_count == 0
+
+
+@pytest.mark.parametrize("worker_class", [AutoCatchWorker, CloudWorker])
+@pytest.mark.parametrize("unavailable", [response(status=429), response(status=503), requests.ReadTimeout(),
+                                         response({"Available": "unknown"})])
+def test_polling_workers_distinguish_unavailable_from_confirmed_full(tmp_path, caplog, worker_class, unavailable):
+    full = response({"Available": 0})
+    api = client(tmp_path, [full, unavailable, full, full])
+    auth = Mock()
+    worker = worker_class(api, ["a", "b"], interval=7, auth_manager=auth)
+    sleeps, logs, states = [], [], []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            worker.is_running = False
+
+    if worker_class is AutoCatchWorker:
+        worker.log_signal.connect(lambda text, level: logs.append(text))
+        worker.status_signal.connect(states.append)
+    caplog.set_level("DEBUG", logger="CloudSniper")
+    worker._sleep = sleep
+    worker.run()
+
+    polls = [event for event in events(api) if event["event"] == "poll_finished"]
+    assert [event["unavailable_sections"] for event in polls] == [["b"], []]
+    assert not any(event["session_expired"] or event["found_section"] for event in polls)
+    assert sleeps == [7, 7]
+    auth.silent_relogin.assert_not_called()
+    assert [call.args[1].rsplit("/", 1)[-1] for call in api.session.request.call_args_list] == ["SectionDetails"] * 4
+    if worker_class is AutoCatchWorker:
+        assert states.count(STATE_UNAVAILABLE) == 1
+        assert logs.count(i18n.tr("autocatch_no_seats")) == 1
+        assert i18n.tr("autocatch_poll_unavailable", "b") in logs
+    else:
+        assert caplog.messages.count("No open seats found in this poll.") == 1
+        assert any("temporarily unavailable for b" in message for message in caplog.messages)
+
+
+def test_autocatch_recovery_failure_leaves_sign_in_prompt(tmp_path, qt_app):
+    api = client(tmp_path, [response(status=401)])
+    auth = Mock()
+    auth.silent_relogin.side_effect = RuntimeError()
+    ui = AutoCatchInterface()
+    ui.set_api_engine(api)
+    ui.set_auth_manager(auth)
+    ui.section_input.setText("a")
+
+    ui.start_monitoring()
+    assert ui.worker.wait(2000)
+    qt_app.processEvents()
+    auth.silent_relogin.assert_called_once()
+    assert ui.worker.recovery_count == 1
+    assert ui.btn_start.isEnabled() and not ui.btn_stop.isEnabled()
+    assert ui.status_label.text() == i18n.tr("autocatch_status_relogin")
+    assert i18n.tr("log_session_stopped") in ui.log_box.toPlainText()
+    ui.close()
 
 
 @pytest.mark.parametrize("worker_class", [AutoCatchWorker, CloudWorker])

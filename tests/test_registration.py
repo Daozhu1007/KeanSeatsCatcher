@@ -232,10 +232,13 @@ def test_expired_session_propagates_everywhere(tmp_path, reply, operation):
     (response({}), SessionStatus.UNKNOWN),
     (requests.ReadTimeout(), SessionStatus.UNKNOWN),
 ])
-def test_session_check_three_states(tmp_path, reply, expected):
-    api = client(tmp_path, [reply])
+def test_session_check_three_states(tmp_path, monkeypatch, reply, expected):
+    api = client(tmp_path, [])
+    check = Mock(side_effect=[reply])
+    monkeypatch.setattr(requests.Session, "request", check)
     assert api.check_session().status == expected
-    assert api.session.request.call_args.args[0] == "GET"
+    assert check.call_args.args[0] == "GET"
+    api.session.request.assert_not_called()
 
 
 def test_failed_read_preserves_confirmed_and_leaves_others_unknown(tmp_path):

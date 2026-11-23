@@ -8,7 +8,7 @@ from qfluentwidgets import (SubtitleLabel, BodyLabel, LineEdit,
                             FluentIcon as FIF, InfoBar, InfoBarPosition)
 
 from i18n import i18n
-from auto_catch_worker import AutoCatchWorker, STATE_IDLE, STATE_POLLING, STATE_ATTACKING
+from auto_catch_worker import AutoCatchWorker, STATE_IDLE, STATE_POLLING, STATE_ATTACKING, STATE_UNAVAILABLE
 
 
 class AutoCatchInterface(QWidget):
@@ -23,6 +23,7 @@ class AutoCatchInterface(QWidget):
         self.auth_manager = None
         self.sibling = None
         self._is_running = False
+        self._relogin_required = False
 
         title = SubtitleLabel(i18n.tr("autocatch_title"))
         title.setStyleSheet("font-size: 26px; font-weight: bold;")
@@ -106,6 +107,12 @@ class AutoCatchInterface(QWidget):
     def set_auth_manager(self, auth_manager):
         self.auth_manager = auth_manager
 
+    def clear_relogin_status(self):
+        if self._relogin_required:
+            self._relogin_required = False
+            self.status_label.setText(i18n.tr("autocatch_status_idle"))
+            self.status_label.setStyleSheet("color: #a0a0a0; margin-top: 4px;")
+
     def lock_start(self):
         self.btn_start.setEnabled(False)
 
@@ -165,6 +172,7 @@ class AutoCatchInterface(QWidget):
             self.worker.wait(3000)
 
         self._is_running = True
+        self._relogin_required = False
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.section_input.setEnabled(False)
@@ -207,13 +215,17 @@ class AutoCatchInterface(QWidget):
             self.interval_input.setEnabled(True)
             self.waitlist_switch.setEnabled(True)
             self.drop_section_input.setEnabled(True)
-            self.status_label.setText(i18n.tr("autocatch_status_idle"))
+            if not self._relogin_required:
+                self.status_label.setText(i18n.tr("autocatch_status_idle"))
+                self.status_label.setStyleSheet("color: #a0a0a0; margin-top: 4px;")
             if self.sibling:
                 self.sibling.unlock_start()
         elif status == STATE_POLLING:
             pass
         elif status == STATE_ATTACKING:
             self.status_label.setText(i18n.tr("autocatch_status_attacking"))
+        elif status == STATE_UNAVAILABLE:
+            self.status_label.setText(i18n.tr("autocatch_status_unavailable"))
 
     def on_seat_found(self, section_code, available):
         self._show_toast(
@@ -230,6 +242,7 @@ class AutoCatchInterface(QWidget):
             self.log(msg, "error")
 
     def on_round(self, round_count, recovery_count):
+        self.status_label.setStyleSheet("color: #a0a0a0; margin-top: 4px;")
         self.status_label.setText(
             i18n.tr("autocatch_status_polling", round_count, recovery_count))
 
@@ -238,11 +251,9 @@ class AutoCatchInterface(QWidget):
         self.status_label.setStyleSheet("color: #e6a23c; margin-top: 4px;")
 
     def on_session_recovered(self, success):
-        if success:
-            self.status_label.setStyleSheet("color: #a0a0a0; margin-top: 4px;")
-        else:
-            self.status_label.setText(i18n.tr("autocatch_status_idle"))
-            self.status_label.setStyleSheet("color: #a0a0a0; margin-top: 4px;")
+        if not success:
+            self._relogin_required = True
+            self.status_label.setText(i18n.tr("autocatch_status_relogin"))
 
     def _show_toast(self, title, msg):
         try:

@@ -1,3 +1,4 @@
+import math
 import re
 import sqlite3
 import threading
@@ -18,9 +19,14 @@ from i18n import i18n
 from registration_state import (RegistrationRecord, RegistrationSnapshot, SectionResult, SectionStatus,
                                 SessionCheck, SessionStatus, SubmissionResult,
                                 SubmissionStatus, section_credit_limits, valid_credits)
+from session_cookies import AUTH_COOKIE_NAMES, SessionCookies
 
 WAITLIST_ACTION = "Waitlist"
 REGISTRATION_GRACE_SECONDS = 5
+
+
+def _seat_count_known(value):
+    return type(value) is int or (type(value) is float and math.isfinite(value))
 
 
 class SessionExpiredError(Exception):
@@ -50,14 +56,13 @@ class _PageEvidence(HTMLParser):
 
 
 class KeanApiClient:
-    def __init__(self, cookies_dict: dict, verification_token: str, student_id: str,
+    def __init__(self, cookies_dict: dict | list, verification_token: str, student_id: str,
                  registration_reader=None, log_dir=None):
-        self.session = requests.Session()
-        self.session.trust_env = False
+        self.session = self._new_session()
         self.student_id = student_id
         self.base_url = "https://kean-ss.colleague.elluciancloud.com/Student/Planning/DegreePlans"
         self.log_callback = None
-        self.session.cookies.update(cookies_dict)
+        self.session.cookies = SessionCookies.from_browser(cookies_dict, self.base_url)
         self.session.headers.update({
             "__requestverificationtoken": verification_token,
             "accept": "application/json, text/javascript, */*; q=0.01",
@@ -66,6 +71,8 @@ class KeanApiClient:
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0",
         })
         self._credentials_lock = threading.Lock()
+        self._credentials_revision = 0
+        self._main_requests = {}
         self.registration_reader = registration_reader
         self.section_terms = {}
         self._section_credit_limits = {}
@@ -89,22 +96,60 @@ class KeanApiClient:
         self._drop_attempted = set()
         self._log_error_reported = False
 
+    @staticmethod
+    def _new_session():
+        session = requests.Session()
+        session.trust_env = False
+        return session
+
     def update_credentials(self, cookies_dict, verification_token, student_id=None):
         if student_id is not None and str(student_id) != str(self.student_id):
             raise ValueError("Recovered account differs from the active registration account")
+        cookies = SessionCookies.from_browser(cookies_dict, self.base_url)
         with self._credentials_lock:
-            self.session.cookies.clear()
-            self.session.cookies.update(cookies_dict)
+            if self.session in self._main_requests:
+                # An in-flight response can only write back to its original session.
+                session = self._new_session()
+                session.headers.update(self.session.headers)
+                self.session = session
+            self.session.cookies = cookies
             self.session.headers["__requestverificationtoken"] = verification_token
+            self._credentials_revision += 1
 
     def new_read_session(self):
         """Snapshot credentials for an independent read."""
-        session = requests.Session()
-        session.trust_env = False
+        session, _ = self._read_snapshot()
+        return session
+
+    def _read_snapshot(self):
+        session = self._new_session()
         with self._credentials_lock:
             session.headers.update(self.session.headers)
-            session.cookies.update(self.session.cookies.copy())
-        return session
+            session.cookies = self.session.cookies.copy()
+            # A check that overlaps a main request cannot publish its cookie changes.
+            revision = None if self.session in self._main_requests else self._credentials_revision
+        return session, revision
+
+    @staticmethod
+    def _auth_cookies(session):
+        return {(cookie.domain, cookie.path, cookie.name): cookie for cookie in session.cookies
+                if cookie.name in AUTH_COOKIE_NAMES}
+
+    def _merge_check_cookies(self, before, after, revision):
+        removed = before.keys() - after.keys()
+        # Requests installs a new Cookie object even when only its attributes changed.
+        updated = [cookie for key, cookie in after.items() if before.get(key) is not cookie]
+        if not removed and not updated:
+            return 0
+        with self._credentials_lock:
+            if revision != self._credentials_revision:
+                return 0
+            for scope in removed:
+                self.session.cookies.clear(*scope)
+            for cookie in updated:
+                self.session.cookies.set_cookie(cookie)
+            self._credentials_revision += 1
+        return len(removed) + len(updated)
 
     def _log(self, msg, level="normal"):
         print(f"[{level.upper()}] {msg}")
@@ -157,14 +202,32 @@ class KeanApiClient:
                 raise SessionExpiredError("invalid_verification_token")
 
     def _request(self, operation, method, url, section_ids=(), *, session=None, capture=None, **kwargs):
+        if session is not None:
+            return self._request_in_session(session, True, operation, method, url, section_ids, capture, **kwargs)
+        with self._credentials_lock:
+            main = self.session
+            self._main_requests[main] = self._main_requests.get(main, 0) + 1
+            self._credentials_revision += 1
+        try:
+            return self._request_in_session(main, False, operation, method, url, section_ids, capture, **kwargs)
+        finally:
+            with self._credentials_lock:
+                self._main_requests[main] -= 1
+                finished = not self._main_requests[main]
+                if finished:
+                    del self._main_requests[main]
+                retired = finished and main is not self.session
+            if retired:
+                main.close()
+
+    def _request_in_session(self, request_session, background, operation, method, url, section_ids, capture, **kwargs):
         """Audit the actual payload and the credential-filtered response."""
-        request_session = self.session if session is None else session
         secrets = credential_values(request_session)
         request_id = uuid.uuid4().hex
         round_id = self.round_id
         ids = list(section_ids)
         started = dict(request_id=request_id, operation=operation, method=method,
-                       section_ids=ids, background=session is not None, started_at=timestamp(),
+                       section_ids=ids, background=background, started_at=timestamp(),
                        request=request_details(url, kwargs, Redactor(secrets)))
         self._event("request_started", round_id=round_id, **started)
         reason, detail = "unknown", None
@@ -205,7 +268,7 @@ class KeanApiClient:
             if operation == "registration_read":
                 self._last_registration_read = trace
             self._event("request_finished", round_id=round_id, request_id=request_id, operation=operation,
-                        section_ids=ids, background=session is not None, **finished)
+                        section_ids=ids, background=background, **finished)
             if operation in ("register_add", "register_waitlist", "complete_registration", "registration_read"):
                 self._log_request(trace)
 
@@ -229,25 +292,38 @@ class KeanApiClient:
             self._log(f"[{kind}{reference}] {message[:2000]}",
                       "error" if level == "error" or kind in ("Error", "Warning") else "normal")
 
-    def check_session(self, *, session=None):
+    @staticmethod
+    def _origin(url):
+        parsed = urlparse(url or "")
+        port = parsed.port
+        return parsed.scheme, parsed.hostname, port if port is not None else (443 if parsed.scheme == "https" else 80)
+
+    def check_session(self):
         start = time.perf_counter()
         status, reason = SessionStatus.UNKNOWN, "unrecognized_authenticated_page"
-        try:
-            resp = self._request("session_check", "GET", self.base_url, session=session,
-                                 headers={"Cache-Control": "no-cache"}, timeout=(1.5, 8))
-            if resp.status_code == 200:
-                page = _PageEvidence()
-                page.feed(resp.text)
-                if page.logout and page.token:
-                    status, reason = SessionStatus.VALID, "authenticated_page"
-            else:
-                reason = f"http_{resp.status_code}"
-        except SessionExpiredError as exc:
-            status, reason = SessionStatus.EXPIRED, str(exc)
-        except requests.exceptions.RequestException as exc:
-            reason = type(exc).__name__
+        updates = 0
+        session, revision = self._read_snapshot()
+        with session:
+            before = self._auth_cookies(session)
+            try:
+                resp = self._request("session_check", "GET", self.base_url, session=session,
+                                     headers={"Cache-Control": "no-cache"}, timeout=(1.5, 8))
+                if resp.status_code != 200:
+                    reason = f"http_{resp.status_code}"
+                elif resp.history or self._origin(resp.url) != self._origin(self.base_url):
+                    reason = "unexpected_response_origin"
+                else:
+                    page = _PageEvidence()
+                    page.feed(resp.text)
+                    if page.logout and page.token:
+                        status, reason = SessionStatus.VALID, "authenticated_page"
+                        updates = self._merge_check_cookies(before, self._auth_cookies(session), revision)
+            except SessionExpiredError as exc:
+                status, reason = SessionStatus.EXPIRED, str(exc)
+            except requests.exceptions.RequestException as exc:
+                reason = type(exc).__name__
         result = SessionCheck(status, int((time.perf_counter() - start) * 1000), reason)
-        self._event("session_check", **asdict(result))
+        self._event("session_check", **asdict(result), auth_cookie_updates=updates)
         return result
 
     def test_latency(self):
@@ -348,10 +424,12 @@ class KeanApiClient:
             self._credit_lookups.update(ids)
         if ids:
             try:
+                with self._credentials_lock:
+                    headers = self.session.headers.copy()
+                    cookies = self.session.cookies.copy()
                 threading.Thread(
                     target=self._prefetch_registration_credits,
-                    args=(ids, self.session.headers.copy(), self.session.cookies.copy(),
-                          read_credits, include_section_details), daemon=True).start()
+                    args=(ids, headers, cookies, read_credits, include_section_details), daemon=True).start()
             except RuntimeError:
                 with self._credit_lookup_lock:
                     self._credit_lookups.difference_update(ids)
@@ -393,40 +471,48 @@ class KeanApiClient:
                 return None
         return self.section_terms.get(section_id)
 
-    def check_section_status(self, section_id, enable_waitlist=False):
+    def check_section_status(self, section_id, enable_waitlist=False) -> bool | None:
+        """Return whether a submission is possible, or None when availability is unknown."""
         try:
             data = self._section_details(section_id, "section_availability", (1.5, 8))
             if data is None:
-                return False
+                return None
             available = data.get("Available")
             enrolled, capacity = data.get("Enrolled", "?"), data.get("Capacity", "?")
             waitlisted, maximum = data.get("Waitlisted"), data.get("WaitlistMaximum")
-            has_seat = isinstance(available, (int, float)) and available > 0
-            has_waitlist = (enable_waitlist and isinstance(waitlisted, (int, float))
-                            and isinstance(maximum, (int, float)) and waitlisted < maximum
+            known = _seat_count_known(available)
+            has_seat = known and available > 0
+            has_waitlist = (enable_waitlist and _seat_count_known(waitlisted)
+                            and _seat_count_known(maximum) and waitlisted < maximum
                             and data.get("AllowWaitlist") is not False)
+            if not known and not has_waitlist:
+                self._log(i18n.tr("log_section_availability_unknown", section_id))
+                return None
             self._event("availability", section_id=str(section_id),
                         has_seat=has_seat, has_waitlist=bool(has_waitlist), **self._course_details(str(section_id)))
             if has_seat:
                 self._log(i18n.tr("log_section_open", section_id, available, enrolled, capacity), "success")
             elif has_waitlist:
                 self._log(i18n.tr("log_section_waitlist_open", section_id, waitlisted, maximum))
-            elif isinstance(available, (int, float)):
+            else:
                 self._log(i18n.tr("log_section_full", section_id, enrolled, capacity))
             return bool(has_seat or has_waitlist)
         except requests.exceptions.Timeout:
             self._log(i18n.tr("log_section_check_timeout", section_id))
-            return False
         except (requests.exceptions.RequestException, ValueError) as exc:
             self._log(i18n.tr("log_section_check_error", section_id, type(exc).__name__))
-            return False
+        return None
 
-    def poll_available_sections(self, section_ids, enable_waitlist, running):
+    def poll_available_sections(self, section_ids, enable_waitlist, running, *, results=None):
         for sid in section_ids:
             if not running() or self._drop_pending:
                 break
-            if (self.pending_sections([sid]) and self.check_section_status(sid, enable_waitlist=enable_waitlist)
-                    and running()):
+            if not self.pending_sections([sid]):
+                continue
+            available = self.check_section_status(sid, enable_waitlist=enable_waitlist)
+            if results is not None:
+                results[sid] = available
+            if available and running():
                 yield sid
 
     @staticmethod

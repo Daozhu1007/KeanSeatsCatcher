@@ -9,6 +9,7 @@ from worker_session import recover_session
 STATE_IDLE = 0
 STATE_POLLING = 1
 STATE_ATTACKING = 2
+STATE_UNAVAILABLE = 3
 
 
 class AutoCatchWorker(QThread):
@@ -45,33 +46,20 @@ class AutoCatchWorker(QThread):
         Returns True if recovery succeeded and the worker should continue.
         Returns False if recovery failed and the worker should stop.
         """
-        self.log_signal.emit(
-            "[WARNING] Session expired. Initiating automatic re-authentication...",
-            "error")
         self.session_expired_signal.emit()
 
-        if self.auth_manager is None or self.recovery_count >= 1 or not self.is_running:
-            self.log_signal.emit(
-                i18n.tr("log_session_stopped"),
-                "error")
-            self.session_recovered_signal.emit(False)
-            self.is_running = False
-            return False
+        if self.auth_manager is not None and self.recovery_count == 0 and self.is_running:
+            self.log_signal.emit(i18n.tr("log_session_recovery"), "error")
+            self.recovery_count += 1
+            if recover_session(self.api_engine, self.auth_manager, section_ids=self.section_ids):
+                self.log_signal.emit("Session recovered. Resuming Auto-Catch...", "success")
+                self.session_recovered_signal.emit(True)
+                return True
 
-        self.recovery_count += 1
-        if recover_session(self.api_engine, self.auth_manager, section_ids=self.section_ids):
-            self.log_signal.emit(
-                "[SUCCESS] Session recovered. Resuming Auto-Catch...",
-                "success")
-            self.session_recovered_signal.emit(True)
-            return True
-        else:
-            self.log_signal.emit(
-                i18n.tr("log_session_stopped"),
-                "error")
-            self.session_recovered_signal.emit(False)
-            self.is_running = False
-            return False
+        self.log_signal.emit(i18n.tr("log_session_stopped"), "error")
+        self.session_recovered_signal.emit(False)
+        self.is_running = False
+        return False
 
     def run(self):
         self._stop_event.clear()
@@ -90,10 +78,11 @@ class AutoCatchWorker(QThread):
 
             found_section = False
             session_lost = False
+            poll_results = {}
             pending = self.api_engine.pending_sections(self.section_ids)
             try:
                 for sec_id in self.api_engine.poll_available_sections(
-                        pending, self.enable_waitlist, lambda: self.is_running):
+                        pending, self.enable_waitlist, lambda: self.is_running, results=poll_results):
                     found_section = True
                     self.seat_found_signal.emit(sec_id, 0)
                     self.status_signal.emit(STATE_ATTACKING)
@@ -104,8 +93,10 @@ class AutoCatchWorker(QThread):
             except SessionExpiredError:
                 session_lost = True
 
+            unavailable = [sid for sid, available in poll_results.items() if available is None]
             self.api_engine._event("poll_finished", worker="autocatch", poll_round=round_count,
-                                   session_expired=session_lost, found_section=found_section)
+                                   session_expired=session_lost, found_section=found_section,
+                                   unavailable_sections=unavailable)
             if session_lost:
                 if not self._recover_session():
                     break
@@ -124,9 +115,13 @@ class AutoCatchWorker(QThread):
                     break
                 continue
 
+            if unavailable:
+                self.log_signal.emit(i18n.tr("autocatch_poll_unavailable", ", ".join(unavailable)), "normal")
+                if not success:
+                    self.status_signal.emit(STATE_UNAVAILABLE)
             if success or found_section:
                 self.attack_result_signal.emit(success, msg)
-            elif pending:
+            elif pending and all(poll_results.get(sid) is False for sid in pending):
                 self.log_signal.emit(
                     i18n.tr("autocatch_no_seats"), "normal")
 
