@@ -72,6 +72,10 @@ class KeanApiClient:
         })
         self._credentials_lock = threading.Lock()
         self._credentials_revision = 0
+        # Monotonic clock time of the last response that proved the retained
+        # credentials were still accepted (a main-session response or a valid
+        # session check). The keepalive timer uses it to skip duplicate visits.
+        self._last_activity = None
         self._main_requests = {}
         self.registration_reader = registration_reader
         self.section_terms = {}
@@ -115,6 +119,15 @@ class KeanApiClient:
             self.session.cookies = cookies
             self.session.headers["__requestverificationtoken"] = verification_token
             self._credentials_revision += 1
+
+    def last_activity(self):
+        """Last response time (monotonic) that accepted the retained credentials."""
+        return self._last_activity
+
+    def credentials_revision(self):
+        """Bumped on every change to the retained credentials."""
+        with self._credentials_lock:
+            return self._credentials_revision
 
     def new_read_session(self):
         """Snapshot credentials for an independent read."""
@@ -240,6 +253,11 @@ class KeanApiClient:
             response_received_at = timestamp()
             self._check_expired(resp)
             reason = "response_received"
+            if not background:
+                # Any accepted main-session response leaves the retained ticket
+                # either refreshed by the server's sliding renewal or with more
+                # than half of its validity window remaining.
+                self._last_activity = time.monotonic()
             return resp
         except SessionExpiredError as exc:
             reason, detail = "session_expired", str(exc)
@@ -317,6 +335,10 @@ class KeanApiClient:
                     page.feed(resp.text)
                     if page.logout and page.token:
                         status, reason = SessionStatus.VALID, "authenticated_page"
+                        if revision is not None:
+                            # The checked snapshot still represents the main jar,
+                            # so the acceptance speaks for the retained credentials.
+                            self._last_activity = time.monotonic()
                         updates = self._merge_check_cookies(before, self._auth_cookies(session), revision)
             except SessionExpiredError as exc:
                 status, reason = SessionStatus.EXPIRED, str(exc)

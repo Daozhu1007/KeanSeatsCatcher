@@ -12,7 +12,7 @@ import time
 import threading
 import datetime
 from PyQt6.QtGui import QPixmap, QIcon, QIntValidator, QDesktopServices, QTextCursor
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QObject
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
 from qfluentwidgets import (FluentWindow, SubtitleLabel, BodyLabel, LineEdit,
                             PushButton, TextEdit, CardWidget,
@@ -26,6 +26,7 @@ from core_auth import KeanAuthManager
 from core_api import KeanApiClient, SessionExpiredError
 from registration_state import SessionStatus
 from registration_reader import DegreePlanRegistrationReader
+from session_keepalive import SessionKeepalive
 from worker_session import recover_session
 from ui_autocatch import AutoCatchInterface
 from ui_catches import MyCatchesInterface
@@ -227,6 +228,14 @@ class MonitorWorker(QThread):
 
         self.api_engine._event("worker_stopped", worker="dashboard", success=success_flag)
         self.finished_signal.emit(success_flag)
+
+
+class KeepaliveSignals(QObject):
+    """Thread bridge for the Qt-free background session keepalive."""
+
+    log = pyqtSignal(str, str)
+    session_recovered = pyqtSignal()
+    manual_login_required = pyqtSignal(str)
 
 
 class BrowserLaunchWorker(QThread):
@@ -525,6 +534,7 @@ class MonitorInterface(QWidget):
 
 class AuthInterface(QWidget):
     engine_ready_signal = pyqtSignal(object)
+    credentials_refreshed = pyqtSignal()
 
     def __init__(self, parent=None, monitor=None):
         super().__init__(parent=parent)
@@ -599,6 +609,12 @@ class AuthInterface(QWidget):
     def _show_busy(self):
         InfoBar.warning(i18n.tr("auth_title"), i18n.tr("msg_auth_busy"), duration=5000, parent=self)
 
+    @property
+    def is_browser_busy(self):
+        return any(worker is not None and worker.isRunning()
+                   for worker in (getattr(self, "launch_worker", None),
+                                  getattr(self, "extract_worker", None)))
+
     def on_credentials_extracted(self, credentials):
         self.btn_login.setEnabled(True)
         self.btn_extract.setEnabled(True)
@@ -637,6 +653,7 @@ class AuthInterface(QWidget):
         status = "msg_auth_refreshed" if refreshing else "msg_auth_success"
         InfoBar.success(i18n.tr(status), i18n.tr("msg_engine_ready", student_id),
                         position=InfoBarPosition.TOP, duration=5000, parent=self)
+        self.credentials_refreshed.emit()
 
 
 class AboutInterface(ScrollArea):
@@ -676,7 +693,7 @@ class AboutInterface(ScrollArea):
         info_layout.setSpacing(5)
         name_lbl = SubtitleLabel("KeanSeatsCatcher")
         name_lbl.setStyleSheet("font-size: 22px; font-weight: bold;")
-        ver_lbl = BodyLabel("Version 1.3.4")
+        ver_lbl = BodyLabel("Version 1.3.5")
         ver_lbl.setStyleSheet("color: #a0a0a0;")
         info_layout.addWidget(name_lbl)
         info_layout.addWidget(ver_lbl)
@@ -792,6 +809,14 @@ class KeanSeatsCatcherApp(FluentWindow):
         self.autocatch_interface.set_auth_manager(recovery_auth)
         self.monitor_interface.auth_manager = recovery_auth
 
+        self.session_keepalive = None
+        self.keepalive_signals = KeepaliveSignals()
+        self.keepalive_signals.log.connect(self.monitor_interface.log)
+        self.keepalive_signals.session_recovered.connect(self.on_session_auto_recovered)
+        self.keepalive_signals.manual_login_required.connect(self.on_session_manual_login_required)
+        self.auth_interface.engine_ready_signal.connect(self.start_session_keepalive)
+        self.auth_interface.credentials_refreshed.connect(self.notify_keepalive_credentials)
+
         self.monitor_interface.sibling = self.autocatch_interface
         self.autocatch_interface.sibling = self.monitor_interface
 
@@ -804,6 +829,63 @@ class KeanSeatsCatcherApp(FluentWindow):
         self.addSubInterface(self.about_interface, FIF.INFO, i18n.tr("tab_about"), position=NavigationItemPosition.BOTTOM)
 
         self.navigationInterface.expand()
+
+    def start_session_keepalive(self, engine):
+        """Own global session maintenance once credentials exist."""
+        if self.session_keepalive is not None:
+            self.notify_keepalive_credentials()
+            return
+        monitor = self.monitor_interface
+
+        def busy():
+            # Attack rounds and Auto-Catch polls exercise the session themselves
+            # and own their recovery; a scheduled countdown is NOT busy here.
+            return ((monitor.is_running and not monitor.worker.is_waiting)
+                    or self.autocatch_interface.is_running
+                    or monitor.is_checking_session
+                    or self.auth_interface.is_browser_busy)
+
+        signals = self.keepalive_signals
+        self.session_keepalive = SessionKeepalive(
+            engine, monitor.auth_manager, busy,
+            on_log=signals.log.emit,
+            on_recovered=signals.session_recovered.emit,
+            on_manual_required=signals.manual_login_required.emit)
+        self.session_keepalive.start()
+
+    def notify_keepalive_credentials(self):
+        if self.session_keepalive is not None:
+            self.session_keepalive.credentials_updated()
+
+    def on_session_auto_recovered(self):
+        InfoBar.success(i18n.tr("keepalive_title"), i18n.tr("keepalive_recovered"),
+                        position=InfoBarPosition.TOP, duration=5000, parent=self)
+
+    def on_session_manual_login_required(self, reason):
+        bar = InfoBar.error(i18n.tr("keepalive_title"), i18n.tr("keepalive_manual_required"),
+                            duration=0, parent=self)
+        button = PushButton(i18n.tr("tab_auth"))
+        button.clicked.connect(lambda: self.switchTo(self.auth_interface))
+        bar.addWidget(button)
+        self._show_keepalive_toast()
+
+    def _show_keepalive_toast(self):
+        try:
+            from winotify import Notification
+            toast = Notification(
+                app_id="wku.mingtai.keanseatscatcher.v2",
+                title=i18n.tr("toast_session_title"),
+                msg=i18n.tr("keepalive_manual_required"),
+                duration="long"
+            )
+            toast.show()
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        if self.session_keepalive is not None:
+            self.session_keepalive.stop()
+        super().closeEvent(event)
 
 
 if __name__ == '__main__':

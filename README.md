@@ -62,6 +62,7 @@ ui_main.py  →  PyQt6 + qfluentwidgets
 | **Recovery Counter** | Status bar shows `Polling (Round #1245) \| Recoveries: 3...` for situational awareness |
 | **Waitlist Fallback** | Requires a scoped Closed rejection and a verified record showing the Section is not registered |
 | **Session Check** | Check the session while Dashboard is idle or counting down. Use Authentication to sign in again with the same account before the scheduled time. |
+| **Session Keepalive** | While KSC runs, one background Session Check every ~10 minutes keeps the sliding auth cookie fresh — no manual clicking, no blocked registration timing. On expiry it attempts one verified Okta recovery, then says plainly when a manual sign-in (password/MFA) is required. |
 | **Section Lookup** | Read course details, term, credits, seat counts, waitlist availability and account registration status for one or more Section IDs. |
 | **Event Logs** | JSONL audit trail with requests, redacted responses, per-Section results and timings in `~/.keanseatscatcher/logs` |
 | **My Catches** | Confirmed catches with request details, account filtering and individual record deletion. History lives in `~/.keanseatscatcher/catches.sqlite3` across Portable upgrades. |
