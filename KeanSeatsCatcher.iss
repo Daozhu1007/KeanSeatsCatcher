@@ -1,9 +1,9 @@
 ; ─────────────────────────────────────────────────────────────
-; KeanSeatsCatcher v1.3 — Inno Setup Installer Script
+; KeanSeatsCatcher — Inno Setup Installer Script
 ; ─────────────────────────────────────────────────────────────
 
 #define MyAppName       "KeanSeatsCatcher"
-#define MyAppVersion    "1.3"
+#define MyAppVersion    "1.3.5"
 #define MyAppPublisher  "Limitime"
 #define MyAppURL        "https://github.com/Daozhu1007/KeanSeatsCatcher"
 #define MyAppExeName    "KeanSeatsCatcher.exe"
@@ -57,8 +57,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-; ── Main executable + _internal bundle (PyInstaller one-folder output) ──
-Source: "dist\KeanSeatsCatcher\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; Start Menu shortcut

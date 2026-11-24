@@ -127,7 +127,7 @@ KSC 提交后经个人课表确认注册的 Section 会进入历史。只读核�
 记录按 Student ID、学期、Section ID 保留首次确认，包含当时的请求和响应。课程学分与实际发送的
 `Credits` 分开显示。当前注册状态以 KeanWISE 为准。
 
-历史保存在 `~/.keanseatscatcher/catches.sqlite3`，Portable 解压或升级后可直接读取。
+历史保存在 `~/.keanseatscatcher/catches.sqlite3`。直接运行或替换 Portable 版 `KeanSeatsCatcher.exe` 后，应用会从同一位置读取历史。
 `KSC_DATA_DIR` 可指定数据目录。旧日志恢复的条目会保留已有的状态、时间和请求耗时，
 缺失的请求体、响应体和 Student ID 会标记为未记录。
 

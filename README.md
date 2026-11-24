@@ -107,9 +107,21 @@ pip install -r requirements.txt
 python ui_main.py
 ```
 
-Or download the pre-built packages from [Releases](../../releases):
-- `KeanSeatsCatcher_vX.X_Setup.exe` — full installer (Start Menu shortcuts, uninstaller)
-- `KeanSeatsCatcher_vX.Y.Z_Portable.zip` — portable, extract and run
+Starting with v1.3.5, the Windows Portable build is a single `KeanSeatsCatcher.exe` that runs directly on Windows. The optional `KeanSeatsCatcher_v1.3.5_Setup.exe` installer adds Start Menu shortcuts and an uninstaller. See the [published releases](../../releases).
+
+To upgrade a Portable copy, replace the EXE in its existing folder to keep any `config.json` stored alongside it. My Catches and event logs use `%USERPROFILE%\.keanseatscatcher\catches.sqlite3` and `%USERPROFILE%\.keanseatscatcher\logs\` by default.
+
+#### Build the Windows release
+
+Run these commands with 64-bit Python on Windows from the repository root.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm KeanSeatsCatcher.spec
+```
+
+Distribute `dist\KeanSeatsCatcher.exe` directly as the Portable release. To build the optional installer from the same EXE, compile `KeanSeatsCatcher.iss` with Inno Setup 6.
 
 ### CLI (Windows / Local Test)
 

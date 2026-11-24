@@ -1,12 +1,24 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+
+# Keep Windows system DLLs ahead of unrelated copies when PyInstaller scans PATH.
+if os.name == 'nt':
+    system32 = os.path.join(os.environ['SystemRoot'], 'System32')
+    os.environ['PATH'] = os.pathsep.join((system32, os.environ.get('PATH', '')))
 
 a = Analysis(
     ['ui_main.py'],
     pathex=[],
     binaries=[],
     datas=[('locales', 'locales'), ('assets', 'assets')],
-    hiddenimports=['selenium.webdriver.edge.webdriver', 'selenium.webdriver.edge.options', 'selenium.webdriver.edge.service', 'winotify'],
+    hiddenimports=[
+        'selenium.webdriver.edge.webdriver',
+        'selenium.webdriver.edge.options',
+        'selenium.webdriver.edge.service',
+        'selenium.webdriver.chrome.webdriver',
+        'winotify',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -19,8 +31,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    [],
-    exclude_binaries=True,
+    a.binaries,
+    a.datas,
     name='KeanSeatsCatcher',
     debug=False,
     bootloader_ignore_signals=False,
@@ -33,13 +45,4 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['assets\\logo.ico'],
-)
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='KeanSeatsCatcher',
 )
