@@ -127,6 +127,7 @@ class MonitorWorker(QThread):
 
     def run(self):
         self._stop_event.clear()
+        self.api_engine.begin_registration_task(self.section_ids)
         self.api_engine._event("worker_started", worker="dashboard", section_ids=self.section_ids)
         if self.target_time_str:
             now = datetime.datetime.now()

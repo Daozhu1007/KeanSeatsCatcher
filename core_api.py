@@ -693,6 +693,14 @@ class KeanApiClient:
             self.results.setdefault(sid, SectionResult(sid))
         return ids
 
+    def begin_registration_task(self, section_ids):
+        """Discard settled results for these targets while retaining unresolved submissions."""
+        for sid in map(str, section_ids):
+            result = self.results.get(sid)
+            if result is not None and not result.awaiting_verification:
+                del self.results[sid]
+                self._catch_attempts.pop(sid, None)
+
     def pending_sections(self, section_ids):
         if self._drop_pending or self.registration_reader is None:
             return []
@@ -735,8 +743,7 @@ class KeanApiClient:
         for sid in ids:
             result = self.results[sid]
             record = snapshot.records.get(sid)
-            # Confirmed enrollment is monotonic for this client; later outages
-            # must not re-enable Add. Re-authenticate after an external manual drop.
+            # Keep confirmed enrollment for the rest of this task, including during read outages.
             if result.status == SectionStatus.REGISTERED:
                 continue
             if record and record.term_id:

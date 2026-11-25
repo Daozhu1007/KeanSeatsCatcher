@@ -42,8 +42,92 @@ def test_dashboard_shares_verification_and_finishes_only_when_confirmed(tmp_path
     assert worker._sleep.call_args.args[0] >= 2
 
 
+@pytest.mark.parametrize("worker_class", [MonitorWorker, AutoCatchWorker])
+def test_new_task_submits_again_after_manual_drop(tmp_path, worker_class):
+    api = client(tmp_path, [])
+    account_status = S.NOT_REGISTERED
+
+    def request(method, url, **kwargs):
+        nonlocal account_status
+        if url.endswith("/SectionDetails"):
+            return response({"Available": int(account_status == S.NOT_REGISTERED)})
+        if url.endswith("/RegisterSections"):
+            entries = kwargs["json"]["sectionRegistrations"]
+            assert [(entry["SectionId"], entry["Action"]) for entry in entries] == [("a", "Add")]
+            assert account_status == S.NOT_REGISTERED
+        elif url.endswith("/CompleteRegistration"):
+            account_status = S.REGISTERED
+        else:
+            pytest.fail(f"Unexpected request: {method} {url}")
+        return response([])
+
+    api.session.request.side_effect = request
+    api.registration_reader.read.side_effect = lambda *_: snapshot(a=account_status)
+    assert api.execute_full_attack(["a"])[0]
+    session, original_history = api.session, api.history.records()
+    assert len(original_history) == 1
+
+    # Drop on KeanWISE while KSC still holds the previous confirmation.
+    account_status = S.NOT_REGISTERED
+    args = (api, ["a"], 0, "") if worker_class is MonitorWorker else (api, ["a"], 1)
+    worker = worker_class(*args)
+    worker._sleep = lambda _: pytest.fail("The new registration should succeed in one round")
+    worker.run()
+
+    assert account_status == S.REGISTERED and api.all_registered(["a"])
+    assert sum(call.args[1].endswith("/RegisterSections") for call in session.request.call_args_list) == 2
+    assert api.registration_reader.read.call_count == 2
+    assert api.session is session
+    assert api.history.records() == original_history
+
+
+@pytest.mark.parametrize("worker_class", [MonitorWorker, AutoCatchWorker])
+def test_new_task_keeps_unconfirmed_add_and_its_grace_period(tmp_path, monkeypatch, worker_class):
+    clock = [0]
+    monkeypatch.setattr("core_api.time.monotonic", lambda: clock[0])
+    api = client(tmp_path, [requests.ReadTimeout()],
+                 [snapshot(a=S.NOT_REGISTERED), snapshot(a=S.NOT_REGISTERED), snapshot(a=S.REGISTERED)])
+    assert not api.execute_full_attack(["a"])[0]
+    clock[0] = 4
+
+    args = (api, ["a"], 0, "") if worker_class is MonitorWorker else (api, ["a"], 1)
+    worker = worker_class(*args)
+
+    def wait_for_late_write(_):
+        if clock[0] != 4 or api.session.request.call_count != 1:
+            pytest.fail("Unconfirmed Add must not be repeated")
+        clock[0] = 6
+
+    worker._sleep = wait_for_late_write
+    worker.run()
+
+    assert api.all_registered(["a"])
+    api.session.request.assert_called_once()
+    assert api.registration_reader.read.call_count == 3
+    record, = api.history.records()
+    assert record["requests"][0]["reason"] == "ReadTimeout"
+
+
+def test_autocatch_new_task_waits_for_unconfirmed_drop(tmp_path):
+    api = client(tmp_path, [requests.ReadTimeout()], [
+        snapshot(a=S.NOT_REGISTERED, old=S.REGISTERED),
+        snapshot(a=S.REGISTERED),
+        snapshot(a=S.REGISTERED, old=S.NOT_REGISTERED),
+    ])
+    assert not api.execute_full_attack(["a"], drop_section_id="old")[0]
+
+    worker = AutoCatchWorker(api, ["a"], 1, drop_section_id="old")
+    worker._sleep = lambda _: pytest.fail("The swap should be confirmed in one poll")
+    worker.run()
+
+    assert api.all_registered(["a"])
+    api.session.request.assert_called_once()
+    assert api.registration_reader.read.call_count == 3
+
+
 def test_dashboard_deadline_does_not_wait_for_credit_lookup(tmp_path, monkeypatch):
-    api = client(tmp_path, [requests.ReadTimeout()], [snapshot(a=S.REGISTERED)])
+    api = client(tmp_path, [requests.ReadTimeout()], [snapshot(a=S.REGISTERED)] * 2)
+    api.verify_registration(["a"])
     clock = iter([datetime.datetime(2026, 11, 19, 12), datetime.datetime(2026, 11, 19, 12, 0, 1)])
     monkeypatch.setattr("ui_main.datetime", SimpleNamespace(datetime=SimpleNamespace(now=lambda: next(clock))))
     lookup_started, release, lookup_finished = threading.Event(), threading.Event(), threading.Event()

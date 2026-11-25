@@ -56,7 +56,7 @@ Dashboard 在设定时间发出首批普通 Add。Auto-Catch 在每门课通过�
 
 | 状态 | 证据与行为 |
 | --- | --- |
-| `REGISTERED` | 只由个人注册记录确认；当前 client 生命周期内不再 Add |
+| `REGISTERED` | 只由个人注册记录确认；当前任务余下轮次跳过 Add |
 | `PLANNED` | 个人记录确认仅在计划中，尚未注册；满足提交条件时可 Add |
 | `NOT_REGISTERED` | reader 明确确认该 Section 未注册；允许冷却后重试 |
 | `REJECTED` | 明确关联到该 Section 的拒绝通知；不等于已经核实其不在课表中 |
@@ -67,7 +67,7 @@ Dashboard 在设定时间发出首批普通 Add。Auto-Catch 在每门课通过�
 不能把课程名称形式的批量报错随意归给某个 Section。一条 Duplicate/Already Registered
 永远不能证明整批成功；Closed 也不能证明某门课尚未注册。账户记录优先于提交报错。
 
-首次普通 Add 可以直接发出，同一 client 已确认注册或候补的 Section 会跳过。
+首次普通 Add 可以直接发出，同一任务已确认注册或候补的 Section 会跳过。
 部分拒绝但仍有可能已接收的 Section 时，照常发送一次 CompleteRegistration，再以个人课表逐门核验。
 即使余量为零，后续轮次仍会核验有待确认的结果。读取失败会保留此前已确认的结果。
 
@@ -81,8 +81,8 @@ Auto-Catch 和 CLI 的只读核验完成后，重试前仍须重新检查余量�
 Waitlist 仅用于已明确 Closed、且个人记录确认未选的目标，候补状态会单独显示。
 显式选择同步换课时，提交前会核验新旧课，避免对已注册的替换目标附带退课。发出的 Drop 不会自动重放。
 确认退课目标已离开实际注册记录后，才能报告整次换课成功。
-当前 client 的核验状态保存在内存。每次启动后，提交和重试仍依照本次会话的课表证据。
-手动在官方页面改变课表后，应重新认证以建立新的 client。
+在 Dashboard 或 Auto-Catch 开始新任务时，目标 Section 已结算的结果会清除，尚待核验的提交继续核验。
+手动在 KeanWISE 改变课表后，可使用同一登录 Session 重新开始任务。
 
 ## Session Check
 
