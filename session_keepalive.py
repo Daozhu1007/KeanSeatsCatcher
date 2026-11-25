@@ -22,6 +22,8 @@ class KeepaliveSnapshot:
     can_check: bool
     can_keepalive: bool
     session: SessionState
+    scheduled_from: float | None
+    recovering: bool
 
 
 class SessionKeepalive:
@@ -46,6 +48,7 @@ class SessionKeepalive:
         self._manual_required_since = None
         self._credential_updates = 0
         self._action = None
+        self._recovering = False
         self._thread = None
 
     def start(self):
@@ -55,6 +58,7 @@ class SessionKeepalive:
             self._stopped = False
             self._anchor = time.monotonic()
             self._action = None
+            self._recovering = False
             self._thread = threading.Thread(target=self._run, name="session-keepalive", daemon=True)
             self._thread.start()
 
@@ -95,14 +99,16 @@ class SessionKeepalive:
             session.last_activity is None or session.last_activity <= self._anchor
         )
 
-    def _next_due(self, session):
+    def _next_schedule(self, session):
         if not self._enabled or self._needs_sign_in(session):
-            return None
+            return None, None
         if self._using_retry(session):
+            start = self._anchor
             due = self._retry_due
         else:
-            due = max(self._anchor, session.last_activity or self._anchor) + self.interval
-        return max(due, session.cooldown_until)
+            start = max(self._anchor, session.last_activity or self._anchor)
+            due = start + self.interval
+        return start, max(due, session.cooldown_until)
 
     def _can_check(self, session, busy, now):
         return (self._thread is not None and self._thread.is_alive() and not self._stopped and self._action is None
@@ -124,7 +130,7 @@ class SessionKeepalive:
             now, session, busy = time.monotonic(), self.client.session_state(), self.is_busy()
             needs_sign_in = self._needs_sign_in(session)
             can_check = self._can_check(session, busy, now)
-            next_due = None
+            scheduled_from = next_due = None
             if not self._enabled or self._stopped:
                 state = "disabled"
             elif self._action is not None:
@@ -134,13 +140,14 @@ class SessionKeepalive:
             elif busy:
                 state = "busy"
             else:
-                next_due = self._next_due(session)
+                scheduled_from, next_due = self._next_schedule(session)
                 if now < session.cooldown_until:
                     state = "cooldown"
                 else:
                     state = "retry" if self._using_retry(session) else "scheduled"
             return KeepaliveSnapshot(state, self.interval, next_due, self._action, can_check,
-                                     can_check and not needs_sign_in, session)
+                                     can_check and not needs_sign_in, session, scheduled_from,
+                                     self._recovering)
 
     def _run(self):
         while True:
@@ -149,7 +156,7 @@ class SessionKeepalive:
                     return
                 session = self.client.session_state()
                 if self._action is None:
-                    due = self._next_due(session)
+                    _, due = self._next_schedule(session)
                     if due is None:
                         # A registration worker can restore the session while maintenance is parked.
                         self._changed.wait(1 if self._enabled else None)
@@ -174,6 +181,7 @@ class SessionKeepalive:
 
             with self._changed:
                 self._action = None
+                self._recovering = False
                 if self._stopped:
                     return
                 credentials_changed = credential_updates != self._credential_updates
@@ -200,6 +208,8 @@ class SessionKeepalive:
         self.client._event("session_keepalive", outcome="expired",
                            elapsed_ms=check.elapsed_ms, reason=check.reason)
         self._report(i18n.tr("log_session_recovery"), "error")
+        with self._changed:
+            self._recovering = self.auth_manager is not None
         recovered = recover_session(self.client, self.auth_manager, expected_revision=revision)
         if recovered is None:
             return check, "expired_deferred"

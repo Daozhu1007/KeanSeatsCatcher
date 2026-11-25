@@ -86,9 +86,11 @@ def advance(keeper, clock, target):
 def test_recent_registration_traffic_moves_due_time_without_a_duplicate_visit(clock, start_keeper):
     fake = FakeClient([SessionCheck(SessionStatus.VALID, 5, "authenticated_page")])
     keeper = start_keeper(fake)
+    assert keeper.snapshot().scheduled_from == 200
     assert keeper.snapshot().next_due == 800
     fake.state = replace(fake.state, last_activity=700.0)
     advance(keeper, clock, 800)
+    assert keeper.snapshot().scheduled_from == 700
     assert keeper.snapshot().next_due == 1300
     assert fake.check_calls == 0
 
@@ -115,6 +117,7 @@ def test_network_failure_gets_one_early_recheck_per_regular_cycle(clock, start_k
         advance(keeper, clock, due)
         wait_until(lambda: len(fake.log_events) == index and logs.call_count == index)
         assert keeper.snapshot().state == resulting_state
+        assert keeper.snapshot().scheduled_from == due
         assert keeper.snapshot().next_due == due + delay
         assert fake.state.status == SessionStatus.UNKNOWN
     recover.assert_not_called()
@@ -207,6 +210,7 @@ def test_manual_actions_share_worker_and_work_with_auto_off(clock, start_keeper)
     try:
         assert entered.wait(1)
         assert keeper.snapshot().action == "keepalive"
+        assert not keeper.snapshot().recovering
         assert not keeper.request_check()
         assert not keeper.request_now()
     finally:
@@ -240,6 +244,29 @@ def test_disabling_auto_prevents_recovery_after_pending_automatic_check(clock, s
     assert fake.log_events[-1]["outcome"] == "expired_deferred"
     assert keeper.snapshot().next_due is None
     recover.assert_not_called()
+
+
+def test_snapshot_tracks_recovery_until_the_cycle_settles(clock, start_keeper, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+
+    def recover(*args, **kwargs):
+        entered.set()
+        assert release.wait(3)
+        return False
+
+    monkeypatch.setattr(session_keepalive, "recover_session", recover)
+    fake = FakeClient([SessionCheck(SessionStatus.EXPIRED, 5, "http_401")])
+    keeper = start_keeper(fake, auth_manager=Mock())
+    assert keeper.request_now()
+    try:
+        assert entered.wait(1)
+        snapshot = keeper.snapshot()
+        assert snapshot.recovering and snapshot.action == "keepalive"
+        assert snapshot.scheduled_from is snapshot.next_due is None
+    finally:
+        release.set()
+    wait_until(lambda: keeper.snapshot().state == "manual_required")
+    assert not keeper.snapshot().recovering
 
 
 @pytest.mark.parametrize("error", [requests.ConnectTimeout(), requests.ReadTimeout(), requests.ConnectionError()])

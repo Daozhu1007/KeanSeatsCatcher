@@ -34,6 +34,8 @@ from ui_lookup import SectionLookupInterface
 from ui_session import SessionStatusButton
 from ui_settings import SettingsInterface
 
+APP_USER_MODEL_ID = "wku.mingtai.keanseatscatcher.v2"
+
 
 class BrandingWidget(QWidget):
     clicked = pyqtSignal()
@@ -795,20 +797,13 @@ class KeanSeatsCatcherApp(FluentWindow):
         self.setMinimumSize(900, 650)
 
         self.navigationInterface.setReturnButtonVisible(False)
+        self.navigationInterface.setMenuButtonVisible(False)
         self.navigationInterface.setExpandWidth(207)
 
         if hasattr(self.titleBar, 'titleLabel'):
             self.titleBar.titleLabel.hide()
         if hasattr(self.titleBar, 'iconLabel'):
             self.titleBar.iconLabel.hide()
-
-        try:
-            nav_panel = self.navigationInterface.panel
-            nav_panel.vBoxLayout.removeWidget(nav_panel.menuButton)
-            nav_panel.menuButton.hide()
-            nav_panel.menuButton.setParent(None)
-        except Exception:
-            pass
 
         self.navigationInterface.panel.setMinimumExpandWidth(800)
 
@@ -908,7 +903,7 @@ class KeanSeatsCatcherApp(FluentWindow):
         try:
             from winotify import Notification
             toast = Notification(
-                app_id="wku.mingtai.keanseatscatcher.v2",
+                app_id=APP_USER_MODEL_ID,
                 title=i18n.tr("toast_session_title"),
                 msg=i18n.tr("keepalive_manual_required"),
                 duration="long"
@@ -923,17 +918,39 @@ class KeanSeatsCatcherApp(FluentWindow):
         super().closeEvent(event)
 
 
+def _set_portable_taskbar_properties(window):
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+
+    try:
+        from win32com.propsys import propsys, pscon
+
+        # Portable has no Start menu shortcut for the explicit AppUserModelID.
+        # Give Explorer the main window's own executable and its embedded logo.
+        properties = propsys.SHGetPropertyStoreForWindow(int(window.winId()), propsys.IID_IPropertyStore)
+        for key, value in (
+            (pscon.PKEY_AppUserModel_RelaunchCommand, f'"{sys.executable}"'),
+            (pscon.PKEY_AppUserModel_RelaunchDisplayNameResource, window.windowTitle()),
+            (pscon.PKEY_AppUserModel_RelaunchIconResource, f"{sys.executable},0"),
+            (pscon.PKEY_AppUserModel_ID, APP_USER_MODEL_ID),
+        ):
+            properties.SetValue(key, propsys.PROPVARIANTType(value))
+    except Exception:
+        # The regular Qt window still works if Explorer's property store is unavailable.
+        pass
+
+
 if __name__ == '__main__':
     import ctypes
 
     try:
-        myappid = 'wku.mingtai.keanseatscatcher.v2'
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
     except Exception:
         pass
 
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(os.path.join(data_dir, "assets", "logo.ico")))
     window = KeanSeatsCatcherApp()
+    _set_portable_taskbar_properties(window)
     window.show()
     sys.exit(app.exec())

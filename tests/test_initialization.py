@@ -131,6 +131,8 @@ def test_dashboard_session_flyout_and_persisted_keepalive_preferences(tmp_path, 
     try:
         window.show()
         qt_app.processEvents()
+        nav_panel = window.navigationInterface.panel
+        assert nav_panel.menuButton.parentWidget() is nav_panel and nav_panel.menuButton.isHidden()
         assert settings.keepalive_preferences == (True, 10)
         assert [settings.keepalive_interval.itemData(i) for i in range(3)] == [5, 10, 15]
         assert monitor.btn_ping.geometry().right() == monitor.section_input.geometry().right()
@@ -167,7 +169,9 @@ def test_dashboard_session_flyout_and_persisted_keepalive_preferences(tmp_path, 
             QTest.qWait(10)
         assert values["last_check"].text() != "—"
         assert values["last_renewal"].text() == values["next_check"].text() == "—"
-        assert values["status"].text() == expected_status
+        assert values["last_check"].text() == ui_main.i18n.tr("session_time_just_now")
+        assert values["last_check"].toolTip() and not values["last_renewal"].toolTip()
+        assert values["status"].text() == ui_main.i18n.tr("session_alive")
         assert values["keepalive"].text() == ui_main.i18n.tr("keepalive_state_disabled")
         assert monitor.session_status_button.text() == expected_summary
         assert send.call_count == 1
