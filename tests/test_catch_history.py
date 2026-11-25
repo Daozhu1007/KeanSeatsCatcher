@@ -176,6 +176,67 @@ def test_my_catches_deletes_only_the_selected_local_record(tmp_path, monkeypatch
     page.close()
 
 
+def test_my_catches_reuses_the_view_and_refreshes_after_history_changes(monkeypatch, qt_app):
+    history = CatchHistory()
+    record = dict(student_id="student-a", term_id="2027SP", section_id="fixture", course_name="Fixture",
+                  confirmed_at="2026-11-19T07:00:00.123+08:00", source="live", source_log="run.jsonl",
+                  sent_credits={"status": "unrecorded"}, requests=[{
+                      "operation": "registration_read", "response": {"body": "evidence " * 4096},
+                  }])
+    assert history.save([record, dict(record, student_id="student-b")])
+    page = MyCatchesInterface()
+    engine = Mock()
+    page.bind_engine(engine)
+    try:
+        page.show()
+        page.accounts.setCurrentIndex(page.accounts.findData(record["student_id"]))
+        detail_text = page.details.toPlainText()
+        assert record["requests"][0]["response"]["body"] in detail_text
+        read = Mock(wraps=page.history.records)
+        set_item = Mock(wraps=page.table.setItem)
+        render = Mock(wraps=page.details.setPlainText)
+        monkeypatch.setattr(page.history, "records", read)
+        monkeypatch.setattr(page.table, "setItem", set_item)
+        monkeypatch.setattr(page.details, "setPlainText", render)
+
+        page.hide()
+        page.show()
+        read.assert_not_called()
+        set_item.assert_not_called()
+        render.assert_not_called()
+
+        page.hide()
+        assert history.save([dict(record, student_id="student-c")])
+        page.show()
+        read.assert_called_once_with()
+        assert page.accounts.findData("student-c") >= 0
+        set_item.assert_not_called()
+        render.assert_not_called()
+
+        new_record = dict(record, section_id="new", confirmed_at="2026-11-19T07:01:00+08:00")
+        assert history.save([new_record])
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(engine.history_callback).result()
+        assert page.visible_records == [record]
+        qt_app.processEvents()
+        assert page.visible_records == [new_record, record]
+        assert page.table.currentRow() == 1
+        render.assert_not_called()
+
+        page.hide()
+        assert history.save([dict(new_record, section_id="other")])
+        engine.history_callback()
+        assert read.call_count == 2
+        page.show()
+        assert read.call_count == 3
+        assert page.accounts.currentData() == record["student_id"]
+        assert page.visible_records == [new_record, dict(new_record, section_id="other"), record]
+        assert page.details.toPlainText() == detail_text
+        render.assert_not_called()
+    finally:
+        page.close()
+
+
 def test_dashboard_asks_for_credits_after_editing_finishes(qt_app):
     monitor = MonitorInterface()
     api = Mock()

@@ -33,6 +33,18 @@ class CatchHistory:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         return sqlite3.connect(self.path, timeout=1)
 
+    def revision(self):
+        """Check for changes from other processes without opening SQLite."""
+        stamps = []
+        for path in (self.path, self.path.with_name(self.path.name + "-wal")):
+            try:
+                info = path.stat()
+            except FileNotFoundError:
+                stamps.append(None)
+            else:
+                stamps.append((info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size))
+        return tuple(stamps)
+
     def save(self, records):
         rows = []
         for record in records:

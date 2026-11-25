@@ -41,21 +41,19 @@ class AutoCatchInterface(QWidget):
         input_row1.addWidget(self.section_input, 1)
         card_layout.addLayout(input_row1)
 
-        drop_row = QHBoxLayout()
-        drop_row.addWidget(BodyLabel(i18n.tr("lbl_drop_section_id")))
+        input_row2 = QHBoxLayout()
+        input_row2.addWidget(BodyLabel(i18n.tr("lbl_drop_section_id")))
         self.drop_section_input = LineEdit()
         self.drop_section_input.setPlaceholderText(i18n.tr("placeholder_drop_section_id"))
-        drop_row.addWidget(self.drop_section_input, 1)
-        card_layout.addLayout(drop_row)
+        input_row2.addWidget(self.drop_section_input, 1)
+        input_row2.addSpacing(20)
 
-        input_row2 = QHBoxLayout()
         input_row2.addWidget(BodyLabel(i18n.tr("lbl_interval")))
         self.interval_input = LineEdit()
         self.interval_input.setPlaceholderText(i18n.tr("placeholder_interval_autocatch"))
         self.interval_input.setText("15")
         self.interval_input.setFixedWidth(80)
         input_row2.addWidget(self.interval_input)
-        input_row2.addStretch(1)
         card_layout.addLayout(input_row2)
 
         waitlist_row = QHBoxLayout()
@@ -79,13 +77,14 @@ class AutoCatchInterface(QWidget):
 
         self.layout.addWidget(card)
 
-        self.status_label = BodyLabel(i18n.tr("autocatch_status_idle"))
-        self.status_label.setStyleSheet("color: #a0a0a0; margin-top: 4px;")
-        self.layout.addWidget(self.status_label)
-
+        log_header = QHBoxLayout()
         log_title = BodyLabel(i18n.tr("lbl_log"))
         log_title.setStyleSheet("color: #a0a0a0;")
-        self.layout.addWidget(log_title)
+        log_header.addWidget(log_title, 1)
+        self.status_label = BodyLabel(i18n.tr("autocatch_status_idle"))
+        self.status_label.setStyleSheet("color: #a0a0a0;")
+        log_header.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.layout.addLayout(log_header)
 
         self.log_box = TextEdit()
         self.log_box.setReadOnly(True)
@@ -111,7 +110,7 @@ class AutoCatchInterface(QWidget):
         if self._relogin_required:
             self._relogin_required = False
             self.status_label.setText(i18n.tr("autocatch_status_idle"))
-            self.status_label.setStyleSheet("color: #a0a0a0; margin-top: 4px;")
+            self.status_label.setStyleSheet("color: #a0a0a0;")
 
     def lock_start(self):
         self.btn_start.setEnabled(False)
@@ -217,7 +216,7 @@ class AutoCatchInterface(QWidget):
             self.drop_section_input.setEnabled(True)
             if not self._relogin_required:
                 self.status_label.setText(i18n.tr("autocatch_status_idle"))
-                self.status_label.setStyleSheet("color: #a0a0a0; margin-top: 4px;")
+                self.status_label.setStyleSheet("color: #a0a0a0;")
             if self.sibling:
                 self.sibling.unlock_start()
         elif status == STATE_POLLING:
@@ -242,13 +241,13 @@ class AutoCatchInterface(QWidget):
             self.log(msg, "error")
 
     def on_round(self, round_count, recovery_count):
-        self.status_label.setStyleSheet("color: #a0a0a0; margin-top: 4px;")
+        self.status_label.setStyleSheet("color: #a0a0a0;")
         self.status_label.setText(
             i18n.tr("autocatch_status_polling", round_count, recovery_count))
 
     def on_session_expired(self):
         self.status_label.setText(i18n.tr("autocatch_status_recovering"))
-        self.status_label.setStyleSheet("color: #e6a23c; margin-top: 4px;")
+        self.status_label.setStyleSheet("color: #e6a23c;")
 
     def on_session_recovered(self, success):
         if not success:

@@ -49,6 +49,31 @@ def test_gui_extraction_enables_scoped_reader(tmp_path, monkeypatch, qt_app):
     widget.close()
 
 
+def test_auto_catch_layout_matches_dashboard(qt_app):
+    window = ui_main.KeanSeatsCatcherApp()
+    dashboard, auto = window.monitor_interface, window.autocatch_interface
+    window.stackedWidget.setAnimationEnabled(False)
+    window.resize(900, 650)
+    window.show()
+    try:
+        qt_app.processEvents()
+        window.switchTo(auto)
+        qt_app.processEvents()
+        assert auto.section_input.parentWidget().geometry() == dashboard.section_input.parentWidget().geometry()
+        assert auto.log_box.geometry() == dashboard.log_box.geometry()
+        assert auto.drop_section_input.y() == auto.interval_input.y() == dashboard.interval_input.y()
+        assert auto.drop_section_input.geometry().right() < auto.interval_input.x()
+        assert auto.waitlist_switch.y() == dashboard.waitlist_switch.y()
+        assert auto.btn_start.y() == dashboard.btn_start.y()
+        log_title = next(label for label in auto.findChildren(ui_main.BodyLabel)
+                         if label.text() == ui_main.i18n.tr("lbl_log"))
+        assert auto.status_label.y() == log_title.y()
+        assert auto.status_label.x() > log_title.x()
+        assert auto.status_label.geometry().right() == auto.log_box.geometry().right()
+    finally:
+        window.close()
+
+
 @pytest.mark.parametrize("dismiss", ["button", "shadow", "outside", "escape"])
 def test_session_status_flyout_dismissal(qt_app, dismiss):
     window = QWidget()

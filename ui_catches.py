@@ -2,10 +2,10 @@ import json
 import sqlite3
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QSignalBlocker, Qt, pyqtSignal, pyqtSlot
 from PyQt6.QtWidgets import QAbstractItemView, QHeaderView, QHBoxLayout, QTableWidgetItem, QVBoxLayout, QWidget
-from qfluentwidgets import (BodyLabel, ComboBox, FluentIcon as FIF, InfoBar, MessageBox, PushButton,
-                            SubtitleLabel, TableWidget, TextEdit)
+from qfluentwidgets import (BodyLabel, ComboBox, FluentIcon as FIF, InfoBar, MessageBox, PlainTextEdit,
+                            PushButton, SubtitleLabel, TableWidget)
 
 from catch_history import CatchHistory
 from i18n import i18n
@@ -34,6 +34,8 @@ class MyCatchesInterface(QWidget):
         self.history = CatchHistory()
         self.records = []
         self.visible_records = []
+        self._history_revision = None
+        self._displayed_record = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 32, 24, 24)
         layout.setSpacing(12)
@@ -74,14 +76,16 @@ class MyCatchesInterface(QWidget):
 
         self.detail_title = SubtitleLabel(i18n.tr("catches_evidence"))
         layout.addWidget(self.detail_title)
-        self.details = TextEdit()
+        self.details = PlainTextEdit()
         self.details.setReadOnly(True)
         self.details.setStyleSheet("font-family: Consolas; font-size: 13px;")
         layout.addWidget(self.details, 2)
+        for widget in (self.accounts, self.table, self.detail_title, self.details):
+            widget.hide()
         self.accounts.currentIndexChanged.connect(self._populate)
         self.table.itemSelectionChanged.connect(self._show_details)
         self.btn_delete.clicked.connect(self._delete_selected)
-        self.history_changed.connect(self.refresh)
+        self.history_changed.connect(self._on_history_changed)
 
     def bind_engine(self, engine):
         engine.history_callback = self.history_changed.emit
@@ -90,47 +94,64 @@ class MyCatchesInterface(QWidget):
         super().showEvent(event)
         self.refresh()
 
-    def refresh(self):
-        previous_account = self.accounts.currentData()
+    @pyqtSlot()
+    def _on_history_changed(self):
+        self._history_revision = None
+        if self.isVisible():
+            self.refresh()
+
+    def refresh(self, *, force=False):
         try:
+            revision = self.history.revision()
+            if not force and revision == self._history_revision:
+                return
             self.records = self.history.records()
+            self._history_revision = revision
             empty = i18n.tr("catches_empty")
         except (OSError, sqlite3.Error, ValueError) as exc:
+            self._history_revision = None
             self.records = []
             empty = i18n.tr("log_history_error", type(exc).__name__)
         self.empty.setText(empty)
-        self.accounts.blockSignals(True)
-        self.accounts.clear()
-        self.accounts.addItem(i18n.tr("catches_all_accounts"))
-        accounts = sorted({record["student_id"] for record in self.records if record["student_id"]})
-        for account in accounts:
-            self.accounts.addItem(account, userData=account)
-        if any(record["student_id"] is None for record in self.records):
-            self.accounts.addItem(i18n.tr("catches_unrecorded"), userData="")
-        self.accounts.setCurrentIndex(max(0, self.accounts.findData(previous_account)))
-        self.accounts.blockSignals(False)
+        previous_account = self.accounts.currentData()
+        with QSignalBlocker(self.accounts):
+            self.accounts.clear()
+            self.accounts.addItem(i18n.tr("catches_all_accounts"))
+            accounts = sorted({record["student_id"] for record in self.records if record["student_id"]})
+            for account in accounts:
+                self.accounts.addItem(account, userData=account)
+            if any(record["student_id"] is None for record in self.records):
+                self.accounts.addItem(i18n.tr("catches_unrecorded"), userData="")
+            self.accounts.setCurrentIndex(max(0, self.accounts.findData(previous_account)))
         self.accounts.setVisible(self.accounts.count() > 2)
         self._populate()
 
     def _populate(self):
-        selected = self.table.currentRow()
-        previous = self.visible_records[selected] if 0 <= selected < len(self.visible_records) else None
+        previous = self._selected_record()
+        previous_rows = self.visible_records
         account = self.accounts.currentData()
         self.visible_records = [record for record in self.records
                                 if account is None or (record["student_id"] or "") == account]
-        self.table.blockSignals(True)
-        self.table.setRowCount(len(self.visible_records))
-        for row, record in enumerate(self.visible_records):
-            values = [record.get(field) for field in ("course_name", "section_id", "term_id", "credits", "student_id")]
-            confirmed = _local_time(record["confirmed_at"])
-            values.append(confirmed.split(".", 1)[0])
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(_display(value))
-                item.setToolTip(confirmed if column == 5 else item.text())
-                self.table.setItem(row, column, item)
-        if self.visible_records:
-            self.table.selectRow(self.visible_records.index(previous) if previous in self.visible_records else 0)
-        self.table.blockSignals(False)
+        if self.visible_records == previous_rows:
+            return
+        self.table.setUpdatesEnabled(False)
+        try:
+            with QSignalBlocker(self.table):
+                self.table.clearContents()
+                self.table.setRowCount(len(self.visible_records))
+                for row, record in enumerate(self.visible_records):
+                    values = [record.get(field) for field in (
+                        "course_name", "section_id", "term_id", "credits", "student_id")]
+                    confirmed = _local_time(record["confirmed_at"])
+                    values.append(confirmed.split(".", 1)[0])
+                    for column, value in enumerate(values):
+                        item = QTableWidgetItem(_display(value))
+                        item.setToolTip(confirmed if column == 5 else item.text())
+                        self.table.setItem(row, column, item)
+                if self.visible_records:
+                    self.table.selectRow(self.visible_records.index(previous) if previous in self.visible_records else 0)
+        finally:
+            self.table.setUpdatesEnabled(True)
         self.empty.setVisible(not self.visible_records)
         for widget in (self.table, self.detail_title, self.details):
             widget.setVisible(bool(self.visible_records))
@@ -159,10 +180,13 @@ class MyCatchesInterface(QWidget):
             InfoBar.error(i18n.tr("catches_delete_title"), i18n.tr("log_history_error", type(exc).__name__),
                           duration=5000, parent=self)
             return
-        self.refresh()
+        self.refresh(force=True)
 
     def _show_details(self):
         record = self._selected_record()
+        if record == self._displayed_record:
+            return
+        self._displayed_record = record
         self.btn_delete.setEnabled(record is not None)
         if record is None:
             self.details.clear()
