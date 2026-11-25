@@ -235,7 +235,7 @@ def test_scheduled_dashboard_uses_refreshed_credentials_without_waiting_for_sess
 
     window = KeanSeatsCatcherApp()
     monitor, auth = window.monitor_interface, window.auth_interface
-    check_button = monitor.session_card.btn_check
+    check_button = monitor.btn_ping
     auth.auth_manager = Mock()
     cookie_name = "studentselfservice_production"
     original = dict(cookies={cookie_name: "old"}, verification_token="first-token", student_id="fixture-student")

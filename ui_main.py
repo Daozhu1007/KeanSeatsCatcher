@@ -31,7 +31,7 @@ from worker_session import recover_session
 from ui_autocatch import AutoCatchInterface
 from ui_catches import MyCatchesInterface
 from ui_lookup import SectionLookupInterface
-from ui_session import SessionStatusCard
+from ui_session import SessionStatusButton
 from ui_settings import SettingsInterface
 
 
@@ -284,7 +284,11 @@ class MonitorInterface(QWidget):
 
         title = SubtitleLabel(i18n.tr("monitor_title"))
         title.setStyleSheet("font-size: 26px; font-weight: bold;")
-        self.layout.addWidget(title)
+        title_row = QHBoxLayout()
+        title_row.addWidget(title, 1)
+        self.session_status_button = SessionStatusButton()
+        title_row.addWidget(self.session_status_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.layout.addLayout(title_row)
 
         card = CardWidget()
         card_layout = QVBoxLayout(card)
@@ -336,18 +340,14 @@ class MonitorInterface(QWidget):
         btn_row.addWidget(self.btn_start)
         btn_row.addWidget(self.btn_stop)
         btn_row.addStretch(1)
+        self.btn_keepalive = PushButton(FIF.PLAY, i18n.tr("btn_keepalive_now"))
+        self.btn_ping = PushButton(FIF.SYNC, i18n.tr("btn_ping"))
+        for button in (self.btn_keepalive, self.btn_ping):
+            button.setMinimumWidth(button.sizeHint().width())
+            btn_row.addWidget(button)
         card_layout.addLayout(btn_row)
 
         self.layout.addWidget(card)
-
-        self.session_card = SessionStatusCard()
-        self.layout.addWidget(self.session_card)
-        self.session_card.btn_check.clicked.connect(self.ping_server)
-        self.session_card.btn_keepalive.clicked.connect(self.keepalive_now)
-        self._refresh_session_status()
-        self._session_timer = QTimer(self)
-        self._session_timer.timeout.connect(self._refresh_session_status)
-        self._session_timer.start(1000)
 
         log_title = BodyLabel(i18n.tr("lbl_log"))
         log_title.setStyleSheet("color: #a0a0a0;")
@@ -361,8 +361,15 @@ class MonitorInterface(QWidget):
 
         self.btn_start.clicked.connect(self.start_attack)
         self.btn_stop.clicked.connect(self.stop_attack)
+        self.btn_ping.clicked.connect(self.ping_server)
+        self.btn_keepalive.clicked.connect(self.keepalive_now)
 
         self.section_input.editingFinished.connect(self._prefetch_credits)
+
+        self._refresh_session_status()
+        self._session_timer = QTimer(self)
+        self._session_timer.timeout.connect(self._refresh_session_status)
+        self._session_timer.start(1000)
 
     def set_api_engine(self, engine):
         self.api_engine = engine
@@ -394,10 +401,16 @@ class MonitorInterface(QWidget):
 
     def _refresh_session_status(self):
         snapshot = self.session_keepalive.snapshot() if self.session_keepalive is not None else None
-        self.session_card.update_status(self._keepalive_enabled, self._keepalive_minutes, snapshot)
-        if self.is_checking_session:
-            self.session_card.btn_check.setEnabled(False)
-            self.session_card.btn_keepalive.setEnabled(False)
+        self.session_status_button.update_status(self._keepalive_enabled, self._keepalive_minutes, snapshot)
+
+        action = snapshot.action if snapshot else None
+        self.btn_ping.setText(i18n.tr("session_checking" if action == "check" else "btn_ping"))
+        self.btn_keepalive.setText(i18n.tr("session_checking" if action == "keepalive" else "btn_keepalive_now"))
+        self.btn_ping.setEnabled(bool(snapshot and snapshot.can_check and not self.is_checking_session))
+        self.btn_keepalive.setEnabled(bool(snapshot and snapshot.can_keepalive and not self.is_checking_session))
+        cooling_down = snapshot and time.monotonic() < snapshot.session.cooldown_until
+        self.btn_ping.setToolTip(i18n.tr("keepalive_state_cooldown" if cooling_down else "tooltip_ping"))
+        self.btn_keepalive.setToolTip(i18n.tr("keepalive_state_cooldown" if cooling_down else "tooltip_keepalive_now"))
 
     def can_refresh_session(self):
         return (not (self.sibling and self.sibling.is_running)
