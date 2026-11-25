@@ -1,7 +1,7 @@
 import time
 from datetime import datetime
 
-from PyQt6.QtCore import QPoint
+from PyQt6.QtCore import QEvent, QMetaObject, QPoint, Qt
 from PyQt6.QtWidgets import QGridLayout, QVBoxLayout
 from qfluentwidgets import (
     BodyLabel, CaptionLabel, Flyout, FlyoutAnimationType, FlyoutViewBase,
@@ -43,10 +43,11 @@ class SessionStatusButton(TransparentDropDownPushButton):
         super().__init__()
         self._details = {}
         self._flyout = None
-        self.clicked.connect(self._show_flyout)
+        self.clicked.connect(self._toggle_flyout)
 
-    def _show_flyout(self):
+    def _toggle_flyout(self):
         if self._flyout is not None:
+            self._flyout.close()
             return
 
         view = SessionStatusView()
@@ -54,13 +55,42 @@ class SessionStatusButton(TransparentDropDownPushButton):
         flyout = Flyout(view, self)
         self._flyout = flyout
         flyout.closed.connect(self._clear_flyout)
+        flyout.installEventFilter(self)
         right_margin = flyout.layout().contentsMargins().right()
         offset = self.width() + right_margin - flyout.sizeHint().width()
         anchor = self.mapToGlobal(QPoint(offset, self.height()))
         flyout.exec(anchor, FlyoutAnimationType.DROP_DOWN)
+        self.update()
+
+    def eventFilter(self, watched, event):
+        if (
+            watched is self._flyout
+            and event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick)
+            and event.button() == Qt.MouseButton.LeftButton
+            and self.rect().contains(self.mapFromGlobal(event.globalPosition().toPoint()))
+            and not watched.view.geometry().contains(event.position().toPoint())
+        ):
+            # Closing after this event is dispatched keeps Qt from replaying the press.
+            watched.setAttribute(Qt.WidgetAttribute.WA_NoMouseReplay)
+            QMetaObject.invokeMethod(watched, "close", Qt.ConnectionType.QueuedConnection)
+            return True
+        return super().eventFilter(watched, event)
 
     def _clear_flyout(self):
         self._flyout = None
+        self.update()
+
+    def _drawDropDownIcon(self, painter, rect):
+        if self._flyout is None:
+            super()._drawDropDownIcon(painter, rect)
+            return
+
+        painter.save()
+        painter.translate(rect.center())
+        painter.rotate(180)
+        painter.translate(-rect.center())
+        super()._drawDropDownIcon(painter, rect)
+        painter.restore()
 
     @staticmethod
     def _format_time(value):

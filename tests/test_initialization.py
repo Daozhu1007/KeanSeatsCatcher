@@ -5,6 +5,7 @@ import pytest
 import requests
 from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
+from PyQt6.QtWidgets import QWidget
 from qfluentwidgets import Flyout
 
 import cloud_cli
@@ -12,6 +13,7 @@ import core_auth
 import ui_main
 from registration_reader import DegreePlanRegistrationReader
 from test_registration import client, response, snapshot, S
+from ui_session import SessionStatusButton
 
 
 CREDENTIALS = {"cookies": {}, "verification_token": "fixture-token", "student_id": "fixture-student"}
@@ -45,6 +47,36 @@ def test_gui_extraction_enables_scoped_reader(tmp_path, monkeypatch, qt_app):
     assert isinstance(engines[0].registration_reader, DegreePlanRegistrationReader)
     assert not widget.findChildren(ui_main.LineEdit)
     widget.close()
+
+
+def test_session_status_flyout_toggle_and_popup_mouse_grab(qt_app):
+    window = QWidget()
+    button = SessionStatusButton()
+    button.setParent(window)
+    button.setText("Session: Unchecked")
+    button.adjustSize()
+    window.show()
+    try:
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        assert isinstance(qt_app.activePopupWidget(), Flyout)
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        assert qt_app.activePopupWidget() is None
+
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        flyout = qt_app.activePopupWidget()
+        assert isinstance(flyout, Flyout)
+        # A native popup receives the press even when the cursor is over its trigger.
+        position = flyout.mapFromGlobal(button.mapToGlobal(button.rect().center()))
+        QTest.mousePress(flyout, Qt.MouseButton.LeftButton, pos=position)
+        assert qt_app.activePopupWidget() is flyout
+        qt_app.processEvents()
+        QTest.mouseRelease(button, Qt.MouseButton.LeftButton)
+        assert qt_app.activePopupWidget() is None
+    finally:
+        popup = qt_app.activePopupWidget()
+        if popup is not None:
+            popup.close()
+        window.close()
 
 
 def test_dashboard_session_flyout_and_persisted_keepalive_preferences(tmp_path, monkeypatch, qt_app):
