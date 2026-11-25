@@ -1,13 +1,16 @@
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
 from qfluentwidgets import (SubtitleLabel, BodyLabel, CardWidget, ComboBox,
                             SwitchButton,
-                            FluentIcon as FIF, InfoBar, ScrollArea)
+                            InfoBar, ScrollArea)
 
 from i18n import i18n, load_config, save_config
+from session_keepalive import KEEPALIVE_INTERVAL_MINUTES, KEEPALIVE_INTERVAL_SECONDS
 
 
 class SettingsInterface(ScrollArea):
+    keepalive_changed = pyqtSignal(bool, int)
+
     def __init__(self, parent=None):
         super().__init__(parent=parent)
         self.setObjectName("SettingsInterface")
@@ -40,15 +43,45 @@ class SettingsInterface(ScrollArea):
         browser_text_layout.addWidget(browser_desc)
 
         self.browser_switch = SwitchButton()
-        config = load_config()
-        self.browser_switch.setChecked(
-            config.get("Settings", {}).get("KeepBrowserOpen", False)
-        )
+        settings = load_config().get("Settings", {})
+        self.browser_switch.setChecked(settings.get("KeepBrowserOpen", False))
         self.browser_switch.checkedChanged.connect(self._on_browser_keep_open_changed)
 
         browser_layout.addLayout(browser_text_layout, 1)
         browser_layout.addWidget(self.browser_switch)
         self.layout.addWidget(browser_card)
+
+        keepalive_card = CardWidget()
+        keepalive_layout = QVBoxLayout(keepalive_card)
+        keepalive_layout.setContentsMargins(20, 16, 20, 16)
+        keepalive_layout.setSpacing(12)
+
+        keepalive_row = QHBoxLayout()
+        keepalive_row.addWidget(BodyLabel(i18n.tr("session_keepalive")), 1)
+        self.keepalive_switch = SwitchButton()
+        self.keepalive_switch.setAccessibleName(i18n.tr("session_keepalive"))
+        self.keepalive_switch.setOnText(i18n.tr("settings_keepalive_on"))
+        self.keepalive_switch.setOffText(i18n.tr("keepalive_state_disabled"))
+        self.keepalive_switch.setChecked(settings.get("SessionKeepaliveEnabled") is not False)
+        keepalive_row.addWidget(self.keepalive_switch)
+        keepalive_layout.addLayout(keepalive_row)
+
+        interval_row = QHBoxLayout()
+        interval_row.addWidget(BodyLabel(i18n.tr("session_interval")), 1)
+        self.keepalive_interval = ComboBox()
+        self.keepalive_interval.setAccessibleName(i18n.tr("session_interval"))
+        for minutes in KEEPALIVE_INTERVAL_MINUTES:
+            self.keepalive_interval.addItem(i18n.tr("session_minutes", minutes), userData=minutes)
+        interval = settings.get("SessionKeepaliveIntervalMinutes")
+        if interval not in KEEPALIVE_INTERVAL_MINUTES:
+            interval = KEEPALIVE_INTERVAL_SECONDS // 60
+        self.keepalive_interval.setCurrentIndex(KEEPALIVE_INTERVAL_MINUTES.index(interval))
+        interval_row.addWidget(self.keepalive_interval)
+        keepalive_layout.addLayout(interval_row)
+        self.layout.addWidget(keepalive_card)
+
+        self.keepalive_switch.checkedChanged.connect(self._on_keepalive_changed)
+        self.keepalive_interval.currentIndexChanged.connect(self._on_keepalive_changed)
 
         # --- Language ---
         lang_card = CardWidget()
@@ -82,6 +115,19 @@ class SettingsInterface(ScrollArea):
         config = load_config()
         config.setdefault("Settings", {})["KeepBrowserOpen"] = checked
         save_config(config)
+
+    @property
+    def keepalive_preferences(self):
+        return self.keepalive_switch.isChecked(), self.keepalive_interval.currentData()
+
+    def _on_keepalive_changed(self):
+        enabled, minutes = self.keepalive_preferences
+        config = load_config()
+        settings = config.setdefault("Settings", {})
+        settings["SessionKeepaliveEnabled"] = enabled
+        settings["SessionKeepaliveIntervalMinutes"] = minutes
+        save_config(config)
+        self.keepalive_changed.emit(enabled, minutes)
 
     def _on_lang_changed(self, index):
         lang_code = self.lang_combo.itemData(index)

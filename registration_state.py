@@ -52,6 +52,18 @@ class SessionCheck:
     status: SessionStatus
     elapsed_ms: int
     reason: str
+    transient_network_error: bool = False
+    current: bool = True
+
+
+@dataclass(frozen=True)
+class SessionState:
+    """Evidence for the retained jar, with monotonic activity and cooldown clocks."""
+    status: SessionStatus | None = None
+    last_successful_check_at: float | None = None
+    last_auth_cookie_renewal_at: float | None = None
+    last_activity: float | None = None
+    cooldown_until: float = 0.0
 
 
 @dataclass

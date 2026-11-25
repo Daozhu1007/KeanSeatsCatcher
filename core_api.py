@@ -6,7 +6,8 @@ import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import asdict, replace
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
@@ -17,12 +18,13 @@ from event_log import (EventLog, Redactor, course_name, credential_values, reque
                        response_details, response_messages, timestamp)
 from i18n import i18n
 from registration_state import (RegistrationRecord, RegistrationSnapshot, SectionResult, SectionStatus,
-                                SessionCheck, SessionStatus, SubmissionResult,
+                                SessionCheck, SessionState, SessionStatus, SubmissionResult,
                                 SubmissionStatus, section_credit_limits, valid_credits)
-from session_cookies import AUTH_COOKIE_NAMES, SessionCookies
+from session_cookies import AUTH_COOKIE_NAMES, PRIMARY_AUTH_COOKIE, SessionCookies
 
 WAITLIST_ACTION = "Waitlist"
 REGISTRATION_GRACE_SECONDS = 5
+SESSION_COOLDOWN_SECONDS = 600
 
 
 def _seat_count_known(value):
@@ -72,10 +74,7 @@ class KeanApiClient:
         })
         self._credentials_lock = threading.Lock()
         self._credentials_revision = 0
-        # Monotonic clock time of the last response that proved the retained
-        # credentials were still accepted (a main-session response or a valid
-        # session check). The keepalive timer uses it to skip duplicate visits.
-        self._last_activity = None
+        self._session_state = SessionState()
         self._main_requests = {}
         self.registration_reader = registration_reader
         self.section_terms = {}
@@ -106,11 +105,13 @@ class KeanApiClient:
         session.trust_env = False
         return session
 
-    def update_credentials(self, cookies_dict, verification_token, student_id=None):
+    def update_credentials(self, cookies_dict, verification_token, student_id=None, *, expected_revision=None):
         if student_id is not None and str(student_id) != str(self.student_id):
             raise ValueError("Recovered account differs from the active registration account")
         cookies = SessionCookies.from_browser(cookies_dict, self.base_url)
         with self._credentials_lock:
+            if expected_revision is not None and expected_revision != self._credentials_revision:
+                return False
             if self.session in self._main_requests:
                 # An in-flight response can only write back to its original session.
                 session = self._new_session()
@@ -119,10 +120,16 @@ class KeanApiClient:
             self.session.cookies = cookies
             self.session.headers["__requestverificationtoken"] = verification_token
             self._credentials_revision += 1
+            self._session_state = SessionState(cooldown_until=self._session_state.cooldown_until)
+            return True
+
+    def session_state(self):
+        with self._credentials_lock:
+            return self._session_state
 
     def last_activity(self):
         """Last response time (monotonic) that accepted the retained credentials."""
-        return self._last_activity
+        return self.session_state().last_activity
 
     def credentials_revision(self):
         """Bumped on every change to the retained credentials."""
@@ -148,21 +155,75 @@ class KeanApiClient:
         return {(cookie.domain, cookie.path, cookie.name): cookie for cookie in session.cookies
                 if cookie.name in AUTH_COOKIE_NAMES}
 
-    def _merge_check_cookies(self, before, after, revision):
+    def _merge_check_cookies(self, before, after):
+        """Publish changes while holding the credentials lock for the checked revision."""
         removed = before.keys() - after.keys()
         # Requests installs a new Cookie object even when only its attributes changed.
         updated = [cookie for key, cookie in after.items() if before.get(key) is not cookie]
-        if not removed and not updated:
-            return 0
-        with self._credentials_lock:
-            if revision != self._credentials_revision:
-                return 0
-            for scope in removed:
-                self.session.cookies.clear(*scope)
-            for cookie in updated:
-                self.session.cookies.set_cookie(cookie)
+        for scope in removed:
+            self.session.cookies.clear(*scope)
+        for cookie in updated:
+            self.session.cookies.set_cookie(cookie)
+        if removed or updated:
             self._credentials_revision += 1
         return len(removed) + len(updated)
+
+    @staticmethod
+    def _auth_cookie_renewed(before, after, received_at):
+        previous = {(domain.lstrip("."), path): cookie.value
+                    for (domain, path, name), cookie in before.items()
+                    if name == PRIMARY_AUTH_COOKIE and cookie.value}
+        return any(name == PRIMARY_AUTH_COOKIE and cookie.value and not cookie.is_expired(received_at)
+                   and (domain.lstrip("."), path) in previous
+                   and cookie.value != previous[domain.lstrip("."), path]
+                   for (domain, path, name), cookie in after.items())
+
+    def _record_session_observation(self, status, *, activity=None, checked_at=None, renewed_at=None):
+        """Update the observation for the active jar under the credentials lock."""
+        previous = self._session_state
+        self._session_state = replace(
+            previous, status=status,
+            last_activity=activity if activity is not None else previous.last_activity,
+            last_successful_check_at=checked_at if checked_at is not None else previous.last_successful_check_at,
+            last_auth_cookie_renewal_at=renewed_at if renewed_at is not None else previous.last_auth_cookie_renewal_at,
+        )
+
+    @staticmethod
+    def _retry_after_seconds(value, received_at):
+        try:
+            value = value.strip()
+            if value.isascii() and value.isdecimal():
+                return float(value)
+            deadline = parsedate_to_datetime(value)
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+            return max(0, deadline.timestamp() - received_at)
+        except (ValueError, OSError, OverflowError):
+            return None
+
+    def _record_session_cooldown(self, response, received_at, activity):
+        value = response.headers.get("Retry-After")
+        seconds = self._retry_after_seconds(value, received_at) if value is not None else None
+        if seconds is None and response.status_code in (403, 429, 503):
+            seconds = SESSION_COOLDOWN_SECONDS
+        if seconds is not None:
+            with self._credentials_lock:
+                deadline = activity + seconds
+                if deadline > self._session_state.cooldown_until:
+                    self._session_state = replace(self._session_state, cooldown_until=deadline)
+
+    def _record_main_response(self, session, revision, before, response, reason, received_at, activity):
+        with self._credentials_lock:
+            if revision != self._credentials_revision:
+                return
+            if reason == "session_expired":
+                self._record_session_observation(SessionStatus.EXPIRED)
+            elif reason == "response_received" and 200 <= response.status_code < 300:
+                renewed = self._auth_cookie_renewed(before, self._auth_cookies(session), received_at)
+                self._record_session_observation(SessionStatus.VALID, activity=activity,
+                                                 renewed_at=received_at if renewed else None)
+            else:
+                self._record_session_observation(SessionStatus.UNKNOWN)
 
     def _log(self, msg, level="normal"):
         print(f"[{level.upper()}] {msg}")
@@ -221,8 +282,10 @@ class KeanApiClient:
             main = self.session
             self._main_requests[main] = self._main_requests.get(main, 0) + 1
             self._credentials_revision += 1
+            revision = self._credentials_revision if self._main_requests[main] == 1 else None
         try:
-            return self._request_in_session(main, False, operation, method, url, section_ids, capture, **kwargs)
+            return self._request_in_session(main, False, operation, method, url, section_ids, capture,
+                                            main_revision=revision, **kwargs)
         finally:
             with self._credentials_lock:
                 self._main_requests[main] -= 1
@@ -233,7 +296,8 @@ class KeanApiClient:
             if retired:
                 main.close()
 
-    def _request_in_session(self, request_session, background, operation, method, url, section_ids, capture, **kwargs):
+    def _request_in_session(self, request_session, background, operation, method, url, section_ids, capture,
+                            main_revision=None, **kwargs):
         """Audit the actual payload and the credential-filtered response."""
         secrets = credential_values(request_session)
         request_id = uuid.uuid4().hex
@@ -245,19 +309,18 @@ class KeanApiClient:
         self._event("request_started", round_id=round_id, **started)
         reason, detail = "unknown", None
         resp, response_received_at, elapsed_ms = None, None, None
+        before = self._auth_cookies(request_session) if main_revision is not None else None
+        received_at, activity = None, None
         start = time.perf_counter()
         try:
             # Never forward the verification token to an SSO redirect target.
             resp = request_session.request(method, url, allow_redirects=False, **kwargs)
+            received_at, activity = time.time(), time.monotonic()
             elapsed_ms = (time.perf_counter() - start) * 1000
             response_received_at = timestamp()
+            self._record_session_cooldown(resp, received_at, activity)
             self._check_expired(resp)
             reason = "response_received"
-            if not background:
-                # Any accepted main-session response leaves the retained ticket
-                # either refreshed by the server's sliding renewal or with more
-                # than half of its validity window remaining.
-                self._last_activity = time.monotonic()
             return resp
         except SessionExpiredError as exc:
             reason, detail = "session_expired", str(exc)
@@ -270,6 +333,9 @@ class KeanApiClient:
         finally:
             if elapsed_ms is None:
                 elapsed_ms = (time.perf_counter() - start) * 1000
+            if main_revision is not None:
+                self._record_main_response(request_session, main_revision, before, resp, reason,
+                                           received_at, activity)
             secrets.update(credential_values(request_session))
             if resp is not None:
                 secrets.update(cookie.value for cookie in resp.cookies)
@@ -317,15 +383,19 @@ class KeanApiClient:
         return parsed.scheme, parsed.hostname, port if port is not None else (443 if parsed.scheme == "https" else 80)
 
     def check_session(self):
+        if time.monotonic() < self.session_state().cooldown_until:
+            return SessionCheck(SessionStatus.UNKNOWN, 0, "retry_after")
         start = time.perf_counter()
         status, reason = SessionStatus.UNKNOWN, "unrecognized_authenticated_page"
         updates = 0
+        transient_network_error = False
         session, revision = self._read_snapshot()
         with session:
             before = self._auth_cookies(session)
             try:
                 resp = self._request("session_check", "GET", self.base_url, session=session,
                                      headers={"Cache-Control": "no-cache"}, timeout=(1.5, 8))
+                received_at, activity = time.time(), time.monotonic()
                 if resp.status_code != 200:
                     reason = f"http_{resp.status_code}"
                 elif resp.history or self._origin(resp.url) != self._origin(self.base_url):
@@ -335,16 +405,26 @@ class KeanApiClient:
                     page.feed(resp.text)
                     if page.logout and page.token:
                         status, reason = SessionStatus.VALID, "authenticated_page"
-                        if revision is not None:
-                            # The checked snapshot still represents the main jar,
-                            # so the acceptance speaks for the retained credentials.
-                            self._last_activity = time.monotonic()
-                        updates = self._merge_check_cookies(before, self._auth_cookies(session), revision)
             except SessionExpiredError as exc:
                 status, reason = SessionStatus.EXPIRED, str(exc)
             except requests.exceptions.RequestException as exc:
                 reason = type(exc).__name__
-        result = SessionCheck(status, int((time.perf_counter() - start) * 1000), reason)
+                transient_network_error = (
+                    isinstance(exc, (requests.exceptions.Timeout, requests.exceptions.ConnectionError))
+                    and not isinstance(exc, (requests.exceptions.SSLError, requests.exceptions.ProxyError))
+                )
+            with self._credentials_lock:
+                current = revision == self._credentials_revision
+                if current and status == SessionStatus.VALID:
+                    updates = self._merge_check_cookies(before, self._auth_cookies(session))
+                    renewed = updates and self._auth_cookie_renewed(
+                        before, self._auth_cookies(self.session), received_at)
+                    self._record_session_observation(status, activity=activity, checked_at=received_at,
+                                                     renewed_at=received_at if renewed else None)
+                elif current:
+                    self._record_session_observation(status)
+        result = SessionCheck(status, int((time.perf_counter() - start) * 1000), reason,
+                              transient_network_error=transient_network_error, current=current)
         self._event("session_check", **asdict(result), auth_cookie_updates=updates)
         return result
 

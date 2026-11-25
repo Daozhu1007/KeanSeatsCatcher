@@ -86,6 +86,7 @@ def test_valid_check_keeps_distinct_browser_paths_and_applies_scoped_expiry(tmp_
         f"{AUTH}=new", f"{AUTH}=root", f"{ROUTING}=root-routing"]
     assert cookie_header(api, "/Student/Student/Courses/SectionDetails") == [
         f"{AUTH}=root", f"{ROUTING}=root-routing"]
+    assert api.session_state().last_auth_cookie_renewal_at is not None
 
 
 def test_a_different_path_cannot_remove_the_legacy_cookie_used_for_the_check(tmp_path, monkeypatch):
@@ -95,6 +96,55 @@ def test_a_different_path_cannot_remove_the_legacy_cookie_used_for_the_check(tmp
     assert api.check_session().status == SessionStatus.VALID
     assert cookie_header(api, "/Student/Planning/DegreePlans") == [f"{AUTH}=old"]
     assert api.session.cookies.get(AUTH, domain=HOST, path="/Other") == "elsewhere"
+    assert api.session_state().last_auth_cookie_renewal_at is None
+
+
+def test_check_and_renewal_times_are_independent(tmp_path, monkeypatch):
+    api = KeanApiClient({AUTH: "old", ROUTING: "old-routing"}, "header-token", "student", log_dir=tmp_path)
+    cookies = iter([
+        [f"{AUTH}=old; Path=/; Secure; HttpOnly", f"{ROUTING}=new-routing; Path=/"],
+        [f"{AUTH}=new; Path=/; Secure; HttpOnly"],
+        [f"{AUTH}=; Path=/; Max-Age=0"],
+    ])
+    stub_http(monkeypatch, lambda request: reply(request, *next(cookies)))
+
+    assert api.check_session().status == SessionStatus.VALID
+    first = api.session_state()
+    assert first.last_successful_check_at is not None
+    assert first.last_auth_cookie_renewal_at is None
+
+    assert api.check_session().status == SessionStatus.VALID
+    renewed = api.session_state()
+    assert renewed.last_auth_cookie_renewal_at == renewed.last_successful_check_at
+    assert renewed.last_successful_check_at >= first.last_successful_check_at
+
+    assert api.check_session().status == SessionStatus.VALID
+    assert api.session_state().last_auth_cookie_renewal_at == renewed.last_auth_cookie_renewal_at
+    api.update_credentials({AUTH: "imported"}, "new-token")
+    state = api.session_state()
+    assert state.status is None and state.last_activity is None
+    assert state.last_successful_check_at is None and state.last_auth_cookie_renewal_at is None
+
+
+def test_only_successful_main_response_records_retained_renewal(tmp_path, monkeypatch):
+    api = KeanApiClient({AUTH: "old"}, "header-token", "student", log_dir=tmp_path)
+    responses = iter([(200, "renewed"), (503, "error-response-cookie")])
+
+    def send(request):
+        status, value = next(responses)
+        return reply(request, f"{AUTH}={value}; Path=/; Secure; HttpOnly", status=status)
+
+    stub_http(monkeypatch, send)
+    api._request("fixture_main_request", "GET", api.base_url)
+    renewed = api.session_state()
+    assert api.session.cookies.get(AUTH) == "renewed"
+    assert renewed.last_auth_cookie_renewal_at is not None
+    assert renewed.last_successful_check_at is None
+
+    api._request("fixture_main_request", "GET", api.base_url)
+    state = api.session_state()
+    assert state.last_auth_cookie_renewal_at == renewed.last_auth_cookie_renewal_at
+    assert state.last_activity == renewed.last_activity
 
 
 @pytest.mark.parametrize("status, options, expected", [
@@ -110,6 +160,8 @@ def test_check_does_not_merge_cookies_without_same_origin_authentication(tmp_pat
 
     assert api.check_session().status == expected
     assert api.session.cookies.get(AUTH) == "old"
+    assert api.session_state().last_successful_check_at is None
+    assert api.session_state().last_auth_cookie_renewal_at is None
 
 
 @pytest.mark.parametrize("concurrent_change", ["login", "main_request", "session_check"])
@@ -137,7 +189,9 @@ def test_late_valid_check_cannot_roll_back_newer_credentials(tmp_path, monkeypat
                 assert api.check_session().status == SessionStatus.VALID
         finally:
             release.set()
-        assert check.result(timeout=2).status == SessionStatus.VALID
+        result = check.result(timeout=2)
+        assert result.status == SessionStatus.VALID
+        assert not result.current
     assert api.session.cookies.get(AUTH) == "fresh"
     assert [event for event in events(api) if event["event"] == "session_check"][-1]["auth_cookie_updates"] == 0
 
@@ -162,3 +216,5 @@ def test_refresh_isolates_cookies_from_an_in_flight_main_response(tmp_path, monk
         assert request.result(timeout=2).status_code == 200
     assert api.session.cookies.get(AUTH) == "fresh"
     assert api.session.headers["__requestverificationtoken"] == "fresh-token"
+    assert api.session_state().last_activity is None
+    assert api.session_state().last_auth_cookie_renewal_at is None

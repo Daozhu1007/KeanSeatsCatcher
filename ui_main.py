@@ -12,7 +12,7 @@ import time
 import threading
 import datetime
 from PyQt6.QtGui import QPixmap, QIcon, QIntValidator, QDesktopServices, QTextCursor
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QUrl, QObject
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal, QUrl, QObject
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
 from qfluentwidgets import (FluentWindow, SubtitleLabel, BodyLabel, LineEdit,
                             PushButton, TextEdit, CardWidget,
@@ -26,11 +26,12 @@ from core_auth import KeanAuthManager
 from core_api import KeanApiClient, SessionExpiredError
 from registration_state import SessionStatus
 from registration_reader import DegreePlanRegistrationReader
-from session_keepalive import SessionKeepalive
+from session_keepalive import KEEPALIVE_INTERVAL_SECONDS, SessionKeepalive
 from worker_session import recover_session
 from ui_autocatch import AutoCatchInterface
 from ui_catches import MyCatchesInterface
 from ui_lookup import SectionLookupInterface
+from ui_session import SessionStatusCard
 from ui_settings import SettingsInterface
 
 
@@ -74,17 +75,6 @@ class BrandingWidget(QWidget):
 
     def setCompacted(self, compacted: bool):
         pass
-
-
-class PingWorker(QThread):
-    result_signal = pyqtSignal(object)
-
-    def __init__(self, api_engine):
-        super().__init__()
-        self.api_engine = api_engine
-
-    def run(self):
-        self.result_signal.emit(self.api_engine.check_session())
 
 
 class MonitorWorker(QThread):
@@ -235,6 +225,7 @@ class KeepaliveSignals(QObject):
     """Thread bridge for the Qt-free background session keepalive."""
 
     log = pyqtSignal(str, str)
+    check_finished = pyqtSignal(object)
     session_recovered = pyqtSignal()
     manual_login_required = pyqtSignal(str)
 
@@ -285,7 +276,10 @@ class MonitorInterface(QWidget):
         self.auth_manager = None
         self.sibling = None
         self.worker = None
-        self.ping_worker = None
+        self.session_keepalive = None
+        self._keepalive_enabled = True
+        self._keepalive_minutes = KEEPALIVE_INTERVAL_SECONDS // 60
+        self._checking_session = False
         self._ping_is_current = False
 
         title = SubtitleLabel(i18n.tr("monitor_title"))
@@ -342,12 +336,18 @@ class MonitorInterface(QWidget):
         btn_row.addWidget(self.btn_start)
         btn_row.addWidget(self.btn_stop)
         btn_row.addStretch(1)
-        self.btn_ping = PushButton(FIF.SYNC, i18n.tr("btn_ping"))
-        self.btn_ping.setToolTip(i18n.tr("tooltip_ping"))
-        btn_row.addWidget(self.btn_ping)
         card_layout.addLayout(btn_row)
 
         self.layout.addWidget(card)
+
+        self.session_card = SessionStatusCard()
+        self.layout.addWidget(self.session_card)
+        self.session_card.btn_check.clicked.connect(self.ping_server)
+        self.session_card.btn_keepalive.clicked.connect(self.keepalive_now)
+        self._refresh_session_status()
+        self._session_timer = QTimer(self)
+        self._session_timer.timeout.connect(self._refresh_session_status)
+        self._session_timer.start(1000)
 
         log_title = BodyLabel(i18n.tr("lbl_log"))
         log_title.setStyleSheet("color: #a0a0a0;")
@@ -361,7 +361,6 @@ class MonitorInterface(QWidget):
 
         self.btn_start.clicked.connect(self.start_attack)
         self.btn_stop.clicked.connect(self.stop_attack)
-        self.btn_ping.clicked.connect(self.ping_server)
 
         self.section_input.editingFinished.connect(self._prefetch_credits)
 
@@ -385,7 +384,20 @@ class MonitorInterface(QWidget):
 
     @property
     def is_checking_session(self):
-        return self.ping_worker is not None and self.ping_worker.isRunning()
+        return self._checking_session
+
+    def configure_keepalive(self, enabled, minutes):
+        self._keepalive_enabled, self._keepalive_minutes = enabled, minutes
+        if self.session_keepalive is not None:
+            self.session_keepalive.configure(enabled, minutes * 60)
+        self._refresh_session_status()
+
+    def _refresh_session_status(self):
+        snapshot = self.session_keepalive.snapshot() if self.session_keepalive is not None else None
+        self.session_card.update_status(self._keepalive_enabled, self._keepalive_minutes, snapshot)
+        if self.is_checking_session:
+            self.session_card.btn_check.setEnabled(False)
+            self.session_card.btn_keepalive.setEnabled(False)
 
     def can_refresh_session(self):
         return (not (self.sibling and self.sibling.is_running)
@@ -406,7 +418,7 @@ class MonitorInterface(QWidget):
 
     def lock_start(self):
         self.btn_start.setEnabled(False)
-        self.btn_ping.setEnabled(False)
+        self._refresh_session_status()
 
     def unlock_start(self):
         self._refresh_controls()
@@ -416,7 +428,7 @@ class MonitorInterface(QWidget):
         checking = self.is_checking_session
         sibling_busy = self.sibling and self.sibling.is_running
         self.btn_start.setEnabled(not (running or checking or sibling_busy))
-        self.btn_ping.setEnabled(not (checking or sibling_busy) and (not running or self.worker.is_waiting))
+        self._refresh_session_status()
         if self.sibling:
             if running or checking:
                 self.sibling.lock_start()
@@ -498,21 +510,23 @@ class MonitorInterface(QWidget):
     def ping_server(self):
         if not self.can_refresh_session() or self.is_checking_session:
             return
-        if self.api_engine is None:
-            InfoBar.error(i18n.tr("msg_engine_not_ready"), i18n.tr("msg_goto_auth"), duration=3000, parent=self)
-            return
-
-        self.ping_worker = PingWorker(self.api_engine)
-        self._ping_is_current = True
-        self.ping_worker.result_signal.connect(self.on_ping_result)
-        self.ping_worker.finished.connect(self._refresh_controls)
-        self.ping_worker.start()
+        if self.session_keepalive is not None and self.session_keepalive.request_check():
+            self._checking_session = True
+            self._ping_is_current = True
         self._refresh_controls()
 
+    def keepalive_now(self):
+        if self.session_keepalive is not None and not self.is_checking_session:
+            self.session_keepalive.request_now()
+        self._refresh_session_status()
+
     def on_ping_result(self, result):
+        self._checking_session = False
+        self._refresh_controls()
         if not self._ping_is_current:
             return
-        if result.status == SessionStatus.VALID:
+        status = result.status if result.current else SessionStatus.UNKNOWN
+        if status == SessionStatus.VALID:
             InfoBar.success(
                 i18n.tr("msg_ping_title"),
                 i18n.tr("msg_ping_result", f"{result.elapsed_ms} ms"),
@@ -522,12 +536,12 @@ class MonitorInterface(QWidget):
         else:
             bar = InfoBar.warning(
                 i18n.tr("msg_ping_title"),
-                i18n.tr("msg_session_expired" if result.status == SessionStatus.EXPIRED
+                i18n.tr("msg_session_expired" if status == SessionStatus.EXPIRED
                         else "msg_ping_timeout"),
                 duration=6500,
                 parent=self
             )
-            if result.status == SessionStatus.EXPIRED and self.can_refresh_session():
+            if status == SessionStatus.EXPIRED and self.can_refresh_session():
                 button = PushButton(i18n.tr("tab_auth"))
                 button.clicked.connect(self.authentication_requested)
                 bar.addWidget(button)
@@ -694,7 +708,7 @@ class AboutInterface(ScrollArea):
         info_layout.setSpacing(5)
         name_lbl = SubtitleLabel("KeanSeatsCatcher")
         name_lbl.setStyleSheet("font-size: 22px; font-weight: bold;")
-        ver_lbl = BodyLabel("Version 1.3.5")
+        ver_lbl = BodyLabel("Version 1.4.0")
         ver_lbl.setStyleSheet("color: #a0a0a0;")
         info_layout.addWidget(name_lbl)
         info_layout.addWidget(ver_lbl)
@@ -813,6 +827,7 @@ class KeanSeatsCatcherApp(FluentWindow):
         self.session_keepalive = None
         self.keepalive_signals = KeepaliveSignals()
         self.keepalive_signals.log.connect(self.monitor_interface.log)
+        self.keepalive_signals.check_finished.connect(self.monitor_interface.on_ping_result)
         self.keepalive_signals.session_recovered.connect(self.on_session_auto_recovered)
         self.keepalive_signals.manual_login_required.connect(self.on_session_manual_login_required)
         self.auth_interface.engine_ready_signal.connect(self.start_session_keepalive)
@@ -820,6 +835,8 @@ class KeanSeatsCatcherApp(FluentWindow):
 
         self.monitor_interface.sibling = self.autocatch_interface
         self.autocatch_interface.sibling = self.monitor_interface
+        self.monitor_interface.configure_keepalive(*self.settings_interface.keepalive_preferences)
+        self.settings_interface.keepalive_changed.connect(self.monitor_interface.configure_keepalive)
 
         self.addSubInterface(self.monitor_interface, FIF.VIEW, i18n.tr("tab_monitor"))
         self.addSubInterface(self.autocatch_interface, FIF.ZOOM, i18n.tr("tab_autocatch"))
@@ -843,20 +860,24 @@ class KeanSeatsCatcherApp(FluentWindow):
             # and own their recovery; a scheduled countdown is NOT busy here.
             return ((monitor.is_running and not monitor.worker.is_waiting)
                     or self.autocatch_interface.is_running
-                    or monitor.is_checking_session
                     or self.auth_interface.is_browser_busy)
 
         signals = self.keepalive_signals
+        enabled, minutes = self.settings_interface.keepalive_preferences
         self.session_keepalive = SessionKeepalive(
             engine, monitor.auth_manager, busy,
+            enabled=enabled, interval=minutes * 60, on_check=signals.check_finished.emit,
             on_log=signals.log.emit,
             on_recovered=signals.session_recovered.emit,
             on_manual_required=signals.manual_login_required.emit)
+        monitor.session_keepalive = self.session_keepalive
         self.session_keepalive.start()
+        monitor._refresh_session_status()
 
     def notify_keepalive_credentials(self):
         if self.session_keepalive is not None:
             self.session_keepalive.credentials_updated()
+            self.monitor_interface._refresh_session_status()
 
     def on_session_auto_recovered(self):
         InfoBar.success(i18n.tr("keepalive_title"), i18n.tr("keepalive_recovered"),
@@ -864,7 +885,7 @@ class KeanSeatsCatcherApp(FluentWindow):
 
     def on_session_manual_login_required(self, reason):
         bar = InfoBar.error(i18n.tr("keepalive_title"), i18n.tr("keepalive_manual_required"),
-                            duration=0, parent=self)
+                            duration=10000, parent=self)
         button = PushButton(i18n.tr("tab_auth"))
         button.clicked.connect(lambda: self.switchTo(self.auth_interface))
         bar.addWidget(button)

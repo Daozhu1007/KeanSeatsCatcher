@@ -1,214 +1,308 @@
-"""Offline tests for the global background session keepalive.
-
-HTTP never leaves the process: scripted SessionChecks drive the pure logic,
-and the end-to-end cases reuse the mocked-transport fixtures from
-test_registration so the keepalive exercises the real KeanApiClient paths.
-"""
+"""Offline checks for the session maintenance schedule and its HTTP integration."""
 import threading
 import time
+from dataclasses import replace
+from email.utils import formatdate
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 import requests
 
 import session_keepalive
-from registration_state import SessionCheck, SessionStatus
-from session_keepalive import (BUSY_RECHECK_SECONDS, UNKNOWN_ALERT_THRESHOLD,
-                               SessionKeepalive)
+from registration_state import SessionCheck, SessionState, SessionStatus
+from session_keepalive import NETWORK_RECHECK_SECONDS, SessionKeepalive
 from test_registration import client, events, response
 
 
-def check(status, reason="fixture_reason", elapsed=5):
-    return SessionCheck(status, elapsed, reason)
+VALID_PAGE = ('<a href="/Student/Account/Logout">Out</a>'
+              '<input name="__RequestVerificationToken" value="fixture">')
 
 
 class FakeClient:
-    def __init__(self, checks=()):
-        self.checks = list(checks)
+    def __init__(self, checks):
+        self.checks = iter(checks)
         self.check_calls = 0
-        self.activity = None
+        self.state = SessionState()
         self.revision = 1
         self.log_events = []
 
-    def last_activity(self):
-        return self.activity
+    def session_state(self):
+        return self.state
 
     def credentials_revision(self):
         return self.revision
 
     def check_session(self):
         self.check_calls += 1
-        return self.checks.pop(0)
+        check = next(self.checks)
+        if callable(check):
+            check = check()
+        self.state = replace(self.state, status=check.status)
+        if check.status == SessionStatus.VALID:
+            self.state = replace(self.state, last_activity=session_keepalive.time.monotonic())
+        return check
 
     def _event(self, event, **fields):
         self.log_events.append({"event": event, **fields})
 
 
+def wait_until(predicate):
+    deadline = time.monotonic() + 3
+    while not predicate() and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert predicate()
+
+
 @pytest.fixture
 def clock(monkeypatch):
-    """Deterministic monotonic clock for keepalive scheduling."""
     value = [200.0]
-    monkeypatch.setattr(session_keepalive.time, "monotonic", lambda: value[0])
+    monkeypatch.setattr(session_keepalive, "time", SimpleNamespace(monotonic=lambda: value[0]))
     return value
 
 
-def test_recent_registration_traffic_skips_a_duplicate_visit(clock):
-    fake = FakeClient([check(SessionStatus.VALID)])
-    fake.activity = 100.0  # A worker response 100s ago; interval is 600s.
-    keepalive = SessionKeepalive(fake, interval=600)
-    assert keepalive._cycle() == 700.0  # due measured from the traffic, not now.
+@pytest.fixture
+def start_keeper():
+    keepers = []
+
+    def start(api, **kwargs):
+        keeper = SessionKeepalive(api, on_log=kwargs.pop("on_log", Mock()), **kwargs)
+        keeper.start()
+        keepers.append(keeper)
+        return keeper
+
+    yield start
+    for keeper in keepers:
+        keeper.stop()
+        keeper._thread.join(3)
+        assert not keeper._thread.is_alive()
+
+
+def advance(keeper, clock, target):
+    clock[0] = target
+    keeper.configure(True, keeper.interval)
+
+
+def test_recent_registration_traffic_moves_due_time_without_a_duplicate_visit(clock, start_keeper):
+    fake = FakeClient([SessionCheck(SessionStatus.VALID, 5, "authenticated_page")])
+    keeper = start_keeper(fake)
+    assert keeper.snapshot().next_due == 800
+    fake.state = replace(fake.state, last_activity=700.0)
+    advance(keeper, clock, 800)
+    assert keeper.snapshot().next_due == 1300
     assert fake.check_calls == 0
 
-
-def test_valid_check_renews_and_stays_on_schedule(clock):
-    fake = FakeClient([check(SessionStatus.VALID)])
-    logs = []
-    keepalive = SessionKeepalive(fake, interval=600,
-                                 on_log=lambda msg, level: logs.append((msg, level)))
-    assert keepalive._cycle() == 800.0
-    assert fake.check_calls == 1
-    outcomes = [e for e in fake.log_events if e["event"] == "session_keepalive"]
-    assert outcomes == [{"event": "session_keepalive", "outcome": "valid",
-                         "elapsed_ms": 5, "reason": "fixture_reason"}]
-    assert logs[-1][1] == "normal"
+    advance(keeper, clock, 1300)
+    wait_until(lambda: len(fake.log_events) == 1)
+    assert fake.log_events[-1]["outcome"] == "valid"
+    assert keeper.snapshot().next_due == 1900
 
 
-def test_busy_worker_owns_recovery_after_an_expired_check(clock, monkeypatch):
+def test_network_failure_gets_one_early_recheck_per_regular_cycle(clock, start_keeper, monkeypatch):
     recover = Mock()
     monkeypatch.setattr(session_keepalive, "recover_session", recover)
-    fake = FakeClient([check(SessionStatus.EXPIRED, "login_redirect")])
-    keepalive = SessionKeepalive(fake, auth_manager=Mock(), is_busy=lambda: True, interval=600)
-    assert keepalive._cycle() == 200.0 + BUSY_RECHECK_SECONDS
+    failure = SessionCheck(SessionStatus.UNKNOWN, 10, "ReadTimeout", transient_network_error=True)
+    fake = FakeClient([failure] * 4)
+    logs = Mock()
+    keeper = start_keeper(fake, on_log=logs)
+
+    for index, (due, resulting_state, delay) in enumerate([
+        (800, "retry", NETWORK_RECHECK_SECONDS),
+        (860, "scheduled", 600),
+        (1460, "retry", NETWORK_RECHECK_SECONDS),
+        (1520, "scheduled", 600),
+    ], 1):
+        advance(keeper, clock, due)
+        wait_until(lambda: len(fake.log_events) == index and logs.call_count == index)
+        assert keeper.snapshot().state == resulting_state
+        assert keeper.snapshot().next_due == due + delay
+        assert fake.state.status == SessionStatus.UNKNOWN
+    recover.assert_not_called()
+    assert [call.args[1] for call in logs.call_args_list] == ["normal", "normal", "error", "error"]
+
+
+def test_new_activity_cancels_the_extra_recheck(clock, start_keeper):
+    failure = SessionCheck(SessionStatus.UNKNOWN, 10, "ConnectTimeout", transient_network_error=True)
+    fake = FakeClient([failure])
+    keeper = start_keeper(fake)
+    advance(keeper, clock, 800)
+    wait_until(lambda: fake.log_events)
+    fake.state = replace(fake.state, last_activity=820, status=SessionStatus.VALID)
+    advance(keeper, clock, 860)
+    assert keeper.snapshot().state == "scheduled"
+    assert keeper.snapshot().next_due == 1420
+    assert fake.check_calls == 1
+
+
+@pytest.mark.parametrize("interleaving", ["worker_started", "credentials_changed"])
+def test_maintenance_defers_expiry_recovery_when_superseded(clock, start_keeper, monkeypatch, interleaving):
+    recover = Mock()
+    monkeypatch.setattr(session_keepalive, "recover_session", recover)
+    busy = [False]
+
+    def reject():
+        if interleaving == "worker_started":
+            busy[0] = True
+        else:
+            fake.revision += 1
+        return SessionCheck(SessionStatus.EXPIRED, 7, "login_redirect")
+
+    fake = FakeClient([reject])
+    keeper = start_keeper(fake, is_busy=lambda: busy[0])
+    advance(keeper, clock, 800)
+    wait_until(lambda: fake.log_events)
     recover.assert_not_called()
     assert fake.log_events[-1]["outcome"] == "expired_deferred"
-
-
-def test_unknown_results_never_claim_valid_or_trigger_recovery(clock, monkeypatch):
-    recover = Mock()
-    monkeypatch.setattr(session_keepalive, "recover_session", recover)
-    fake = FakeClient([check(SessionStatus.UNKNOWN, "ReadTimeout")] * 4)
-    logs = []
-    keepalive = SessionKeepalive(fake, interval=600,
-                                 on_log=lambda msg, level: logs.append((msg, level)))
-    for _ in range(4):
-        assert keepalive._cycle() == 800.0
-    recover.assert_not_called()
-    assert fake.check_calls == 4
-    assert [level for _, level in logs] == ["normal", "normal", "error", "error"]
-    assert fake.log_events[-1]["consecutive"] == 4
-
-
-def test_failed_recovery_parks_until_new_credentials(clock, monkeypatch):
-    monkeypatch.setattr(session_keepalive, "recover_session", Mock(return_value=False))
-    fake = FakeClient([check(SessionStatus.EXPIRED, "http_401")])
-    manual = []
-    keepalive = SessionKeepalive(fake, auth_manager=Mock(), interval=600,
-                                 on_manual_required=manual.append)
-    assert keepalive._cycle() is None
-    assert manual == ["http_401"]
-    assert keepalive._manual_required
-    # Parked cycles stay silent even if the loop wakes for another pass.
-    fake.checks.append(check(SessionStatus.VALID))
-    assert keepalive._cycle() is None
+    if busy[0]:
+        assert keeper.snapshot().state == "busy"
+        assert keeper.snapshot().next_due is None
     assert fake.check_calls == 1
-    # Re-extracted credentials restart maintenance on a fresh timer.
-    clock[0] = 900.0
-    keepalive.credentials_updated()
-    assert not keepalive._manual_required
-    assert keepalive._cycle() == 1500.0
-    assert fake.check_calls == 2
 
 
-def test_successful_recovery_resumes_maintenance(clock, monkeypatch):
-    monkeypatch.setattr(session_keepalive, "recover_session", Mock(return_value=True))
-    fake = FakeClient([check(SessionStatus.EXPIRED, "login_redirect")])
-    recovered = Mock()
-    keepalive = SessionKeepalive(fake, auth_manager=Mock(), interval=600,
-                                 on_recovered=recovered)
-    assert keepalive._cycle() == 800.0
-    recovered.assert_called_once_with()
-    assert not keepalive._manual_required
-    assert [e["outcome"] for e in fake.log_events] == ["expired", "recovered"]
-
-
-def test_credential_refresh_during_check_defers_recovery(clock, monkeypatch):
-    recover = Mock()
+@pytest.mark.parametrize("recovered", [False, True])
+def test_explicit_expiry_attempts_one_recovery(clock, start_keeper, monkeypatch, recovered):
+    recover = Mock(return_value=recovered)
     monkeypatch.setattr(session_keepalive, "recover_session", recover)
-    fake = FakeClient([check(SessionStatus.EXPIRED, "login_redirect")])
-    original = fake.check_session
+    manual, success = Mock(), Mock()
+    fake = FakeClient([SessionCheck(SessionStatus.EXPIRED, 7, "http_401"),
+                       SessionCheck(SessionStatus.VALID, 5, "authenticated_page")])
+    keeper = start_keeper(fake, auth_manager=Mock(), on_manual_required=manual, on_recovered=success)
+    advance(keeper, clock, 800)
+    wait_until(lambda: manual.called or success.called)
+    recover.assert_called_once()
 
-    def refresh_while_checking():
-        fake.revision += 1  # A concurrent re-extract or worker recovery.
-        return original()
-
-    fake.check_session = refresh_while_checking
-    keepalive = SessionKeepalive(fake, auth_manager=Mock(), interval=600)
-    assert keepalive._cycle() == 200.0 + BUSY_RECHECK_SECONDS
-    recover.assert_not_called()
-    assert fake.log_events[-1]["outcome"] == "expired_deferred"
-
-
-def test_keepalive_runs_the_real_session_check_without_duplicate_visits(tmp_path, monkeypatch):
-    api = client(tmp_path, [])
-    valid = ('<a href="/Student/Account/Logout">Out</a>'
-             '<input name="__RequestVerificationToken" value="fixture">')
-    monkeypatch.setattr(requests.Session, "request", Mock(return_value=response(text=valid)))
-    keepalive = SessionKeepalive(api, interval=600)
-    assert keepalive._cycle() == pytest.approx(time.monotonic() + 600, abs=10)
-    assert api.last_activity() is not None
-    assert events(api)[-1]["event"] == "session_keepalive"
-    assert events(api)[-1]["outcome"] == "valid"
-    assert len([e for e in events(api) if e["event"] == "session_check"]) == 1
-    # The valid check refreshed the retained credentials: an immediate second
-    # cycle is a skip measured from that traffic, not another server visit.
-    assert keepalive._cycle() == pytest.approx(api.last_activity() + 600, abs=10)
-    assert len([e for e in events(api) if e["event"] == "session_check"]) == 1
-
-
-def test_main_registration_response_marks_activity(tmp_path):
-    api = client(tmp_path, [response([])])
-    assert api.last_activity() is None
-    api.register_multiple_sections(["a"])
-    assert api.last_activity() is not None
-    keepalive = SessionKeepalive(api, interval=600)
-    assert keepalive._cycle() == pytest.approx(api.last_activity() + 600, abs=10)
-    assert api.session.request.call_count == 1  # No keepalive visit added.
-
-
-def test_loop_fires_repeatedly_and_stops_cleanly():
-    fake = FakeClient([check(SessionStatus.VALID)] * 50)
-    keepalive = SessionKeepalive(fake, interval=0.05, on_log=Mock())
-    keepalive.start()
-    deadline = time.monotonic() + 5
-    while fake.check_calls < 2 and time.monotonic() < deadline:
-        time.sleep(0.01)
-    keepalive.stop()
-    keepalive._thread.join(2)
-    assert not keepalive._thread.is_alive()
-    assert fake.check_calls >= 2
-
-
-def test_loop_parks_after_failed_recovery_and_revives_on_credentials(monkeypatch):
-    monkeypatch.setattr(session_keepalive, "recover_session", Mock(return_value=False))
-    fake = FakeClient([check(SessionStatus.EXPIRED, "http_401"),
-                       check(SessionStatus.VALID)])
-    manual = threading.Event()
-    keepalive = SessionKeepalive(fake, auth_manager=Mock(), interval=0.05,
-                                 on_log=Mock(), on_manual_required=lambda reason: manual.set())
-    keepalive.start()
-    try:
-        assert manual.wait(5)
-        # Parked: no further checks even though the loop keeps waking.
-        time.sleep(0.3)
+    if recovered:
+        success.assert_called_once_with()
+        assert keeper.snapshot().next_due == 1400
+    else:
+        manual.assert_called_once_with("http_401")
+        assert keeper.snapshot().state == "manual_required"
+        assert keeper.snapshot().next_due is None
+        assert keeper.snapshot().can_check
+        assert not keeper.request_now()
+        advance(keeper, clock, 2000)
         assert fake.check_calls == 1
-        keepalive.credentials_updated()
-        deadline = time.monotonic() + 5
-        while fake.check_calls < 2 and time.monotonic() < deadline:
-            time.sleep(0.01)
+        keeper.credentials_updated()
+        assert keeper.snapshot().next_due == 2600
+        advance(keeper, clock, 2600)
+        wait_until(lambda: fake.log_events[-1]["outcome"] == "valid")
+        assert keeper.snapshot().state == "scheduled"
+
+
+def test_manual_actions_share_worker_and_work_with_auto_off(clock, start_keeper):
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_check():
+        entered.set()
+        assert release.wait(3)
+        return SessionCheck(SessionStatus.VALID, 5, "authenticated_page")
+
+    fake = FakeClient([slow_check, SessionCheck(SessionStatus.UNKNOWN, 10, "ReadTimeout")])
+    fake.state = replace(fake.state, last_activity=195)
+    checked = Mock()
+    keeper = start_keeper(fake, enabled=False, on_check=checked)
+    assert keeper.snapshot().state == "disabled"
+    assert keeper.snapshot().next_due is None
+    assert keeper.request_now()
+    try:
+        assert entered.wait(1)
+        assert keeper.snapshot().action == "keepalive"
+        assert not keeper.request_check()
+        assert not keeper.request_now()
     finally:
-        keepalive.stop()
-        keepalive._thread.join(2)
-    assert fake.check_calls >= 2
+        release.set()
+    wait_until(lambda: fake.log_events)
+    assert keeper.snapshot().next_due is None
+    assert keeper.request_check()
+    wait_until(lambda: checked.called)
+    assert checked.call_args.args[0].status == SessionStatus.UNKNOWN
+
+
+def test_disabling_auto_prevents_recovery_after_pending_automatic_check(clock, start_keeper, monkeypatch):
+    recover = Mock()
+    monkeypatch.setattr(session_keepalive, "recover_session", recover)
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_rejection():
+        entered.set()
+        assert release.wait(3)
+        return SessionCheck(SessionStatus.EXPIRED, 5, "http_401")
+
+    fake = FakeClient([slow_rejection])
+    keeper = start_keeper(fake)
+    advance(keeper, clock, 800)
+    try:
+        assert entered.wait(1)
+        keeper.configure(False, 600)
+    finally:
+        release.set()
+    wait_until(lambda: fake.log_events)
+    assert fake.log_events[-1]["outcome"] == "expired_deferred"
+    assert keeper.snapshot().next_due is None
+    recover.assert_not_called()
+
+
+@pytest.mark.parametrize("error", [requests.ConnectTimeout(), requests.ReadTimeout(), requests.ConnectionError()])
+def test_transport_failures_schedule_recheck_with_real_client(tmp_path, monkeypatch, start_keeper, error):
+    api = client(tmp_path, [])
+    send = Mock(side_effect=[error, response(text=VALID_PAGE)])
+    monkeypatch.setattr(requests.Session, "request", send)
+    keeper = start_keeper(api)
+    assert keeper.request_now()
+    wait_until(lambda: keeper.snapshot().state == "retry")
+    assert keeper.snapshot().next_due == pytest.approx(time.monotonic() + NETWORK_RECHECK_SECONDS, abs=2)
+    assert keeper.snapshot().session.status == SessionStatus.UNKNOWN
+    assert api.last_activity() is None
+    assert keeper.request_now()
+    wait_until(lambda: keeper.snapshot().action is None)
+    assert api.last_activity() is not None
+    assert keeper.snapshot().session.last_successful_check_at is not None
+    assert send.call_count == 2
+
+
+@pytest.mark.parametrize("status, retry_after, seconds", [
+    (429, "1800", 1800),
+    (503, "date", 1200),
+    (429, "invalid", 600),
+    (403, None, 600),
+])
+def test_server_cooldown_blocks_manual_and_automatic_checks(tmp_path, monkeypatch, start_keeper,
+                                                            status, retry_after, seconds):
+    api = client(tmp_path, [])
+    reply = response(status=status)
+    if retry_after is not None:
+        reply.headers["Retry-After"] = formatdate(time.time() + seconds, usegmt=True) if retry_after == "date" else retry_after
+    send = Mock(return_value=reply)
+    monkeypatch.setattr(requests.Session, "request", send)
+    keeper = start_keeper(api, interval=300)
+    assert keeper.request_now()
+    wait_until(lambda: keeper.snapshot().state == "cooldown")
+    due = keeper.snapshot().next_due
+    assert due == pytest.approx(time.monotonic() + seconds, abs=2)
+    assert keeper.snapshot().session.status == SessionStatus.UNKNOWN
+    assert api.last_activity() is None
+    assert not keeper.request_check()
+    keeper.configure(False, 900)
+    assert not keeper.request_now()
+    api.update_credentials({}, "replacement-token")
+    keeper.credentials_updated()
+    assert not keeper.request_check()
+    assert api.check_session().reason == "retry_after"
+    assert send.call_count == 1
+
+
+@pytest.mark.parametrize("status", [302, 400, 403, 429, 500, 503])
+def test_main_error_responses_do_not_advance_activity(tmp_path, status):
+    api = client(tmp_path, [response([]), response(status=status)])
+    api._request("fixture_main_request", "GET", api.base_url)
+    accepted = api.last_activity()
+    assert accepted is not None
+    api._request("fixture_main_request", "GET", api.base_url)
+    assert api.last_activity() == accepted
+    state = api.session_state()
+    assert state.status == SessionStatus.UNKNOWN
+    assert state.last_successful_check_at is None
+    assert bool(state.cooldown_until) == (status in (403, 429, 503))
 
 
 def test_concurrent_recovery_attempts_are_serialized(monkeypatch, tmp_path):
@@ -217,23 +311,37 @@ def test_concurrent_recovery_attempts_are_serialized(monkeypatch, tmp_path):
     release = threading.Event()
     entered = threading.Event()
     api = client(tmp_path, [])
-    valid = '<a href="/Student/Account/Logout">Out</a><input name="__RequestVerificationToken" value="x">'
-    monkeypatch.setattr(requests.Session, "request", Mock(return_value=response(text=valid)))
+    monkeypatch.setattr(requests.Session, "request", Mock(return_value=response(text=VALID_PAGE)))
     auth = Mock()
 
     def slow_relogin(headless=False):
         entered.set()
         release.wait(5)
-        return {"cookies": {}, "verification_token": "late",
-                "student_id": "fixture-student"}
+        return {"cookies": {}, "verification_token": "late", "student_id": "fixture-student"}
 
     auth.silent_relogin.side_effect = slow_relogin
     thread = threading.Thread(target=lambda: recover_session(api, auth))
     thread.start()
-    assert entered.wait(2)
-    # While the first recovery holds the lock, a second attempt cannot start.
-    assert not _recovery_lock.acquire(timeout=0.2)
-    release.set()
-    thread.join(5)
+    try:
+        assert entered.wait(2)
+        assert not _recovery_lock.acquire(timeout=0.2)
+    finally:
+        release.set()
+        thread.join(5)
     assert _recovery_lock.acquire(timeout=1)
     _recovery_lock.release()
+
+
+def test_new_credentials_win_over_a_background_recovery(tmp_path):
+    from worker_session import recover_session
+
+    api = client(tmp_path, [])
+    auth = Mock()
+
+    def slow_relogin(headless=False):
+        api.update_credentials({}, "manually-refreshed")
+        return {"cookies": {}, "verification_token": "stale", "student_id": "fixture-student"}
+
+    auth.silent_relogin.side_effect = slow_relogin
+    assert recover_session(api, auth, expected_revision=api.credentials_revision()) is None
+    assert api.session.headers["__requestverificationtoken"] == "manually-refreshed"

@@ -1,6 +1,8 @@
 {
     "Settings": {
         "Language": "en_US",
-        "KeepBrowserOpen": false
+        "KeepBrowserOpen": false,
+        "SessionKeepaliveEnabled": true,
+        "SessionKeepaliveIntervalMinutes": 10
     }
 }

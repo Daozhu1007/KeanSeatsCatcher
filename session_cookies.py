@@ -4,8 +4,9 @@ from urllib.parse import urlsplit
 from requests.cookies import RequestsCookieJar, create_cookie
 
 
+PRIMARY_AUTH_COOKIE = "studentselfservice_production"
 AUTH_COOKIE_NAMES = frozenset({
-    "studentselfservice_production",
+    PRIMARY_AUTH_COOKIE,
     "studentselfservice_production_Sso",
     "studentselfservice_production_0",
     "studentselfservice_production_sfid",

@@ -3,7 +3,7 @@
 ; ─────────────────────────────────────────────────────────────
 
 #define MyAppName       "KeanSeatsCatcher"
-#define MyAppVersion    "1.3.5"
+#define MyAppVersion    "1.4.0"
 #define MyAppPublisher  "Limitime"
 #define MyAppURL        "https://github.com/Daozhu1007/KeanSeatsCatcher"
 #define MyAppExeName    "KeanSeatsCatcher.exe"

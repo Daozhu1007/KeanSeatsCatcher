@@ -9,10 +9,9 @@ from PyQt6.QtTest import QTest
 
 from auto_catch_worker import AutoCatchWorker, STATE_IDLE, STATE_UNAVAILABLE
 from cloud_worker import CloudWorker
-from ui_main import InfoBar, KeanSeatsCatcherApp, MonitorWorker, PingWorker
+from ui_main import InfoBar, KeanSeatsCatcherApp, MonitorWorker
 from ui_autocatch import AutoCatchInterface
 from i18n import i18n
-from registration_state import SessionStatus
 from test_registration import client, response, snapshot, events, S
 from worker_session import recover_session
 
@@ -224,17 +223,6 @@ def test_repeated_expiration_does_not_loop_reauthentication(tmp_path, monkeypatc
     assert not api.all_registered(["a"])
 
 
-def test_session_check_worker_preserves_three_state_result(tmp_path, monkeypatch):
-    api = client(tmp_path, [])
-    monkeypatch.setattr(requests.Session, "request", Mock(side_effect=requests.ReadTimeout()))
-    worker = PingWorker(api)
-    results = []
-    worker.result_signal.connect(results.append)
-    worker.run()
-    assert results[0].status == SessionStatus.UNKNOWN
-    api.session.request.assert_not_called()
-
-
 def test_scheduled_dashboard_uses_refreshed_credentials_without_waiting_for_session_check(
     tmp_path, monkeypatch, qt_app
 ):
@@ -247,6 +235,7 @@ def test_scheduled_dashboard_uses_refreshed_credentials_without_waiting_for_sess
 
     window = KeanSeatsCatcherApp()
     monitor, auth = window.monitor_interface, window.auth_interface
+    check_button = monitor.session_card.btn_check
     auth.auth_manager = Mock()
     cookie_name = "studentselfservice_production"
     original = dict(cookies={cookie_name: "old"}, verification_token="first-token", student_id="fixture-student")
@@ -294,11 +283,10 @@ def test_scheduled_dashboard_uses_refreshed_credentials_without_waiting_for_sess
     try:
         monitor.btn_start.click()
         scheduled = monitor.worker
-        assert wait_for(lambda: scheduled.is_waiting and monitor.btn_ping.isEnabled())
+        assert wait_for(lambda: scheduled.is_waiting and check_button.isEnabled())
         assert not window.autocatch_interface.btn_start.isEnabled()
-        monitor.btn_ping.click()
-        assert monitor.ping_worker.wait(1000)
-        qt_app.processEvents()
+        check_button.click()
+        assert wait_for(lambda: not monitor.is_checking_session)
         InfoBar.warning.assert_called_once()
 
         auth.on_credentials_extracted(dict(refreshed, student_id="different-student"))
@@ -313,13 +301,13 @@ def test_scheduled_dashboard_uses_refreshed_credentials_without_waiting_for_sess
         assert monitor.worker is scheduled
         assert (scheduled.section_ids, scheduled.interval, scheduled.target_time_str, scheduled.enable_waitlist) == (
             ["a", "b"], 7, "12:00:10", True)
-        assert monitor.btn_ping.isEnabled()
+        assert wait_for(check_button.isEnabled)
 
-        monitor.btn_ping.click()
+        check_button.click()
         assert check_started.wait(1)
         assert not add_started.is_set()
         clock[0] = clock[0].replace(second=10)
-        assert wait_for(lambda: add_started.is_set() and not monitor.btn_ping.isEnabled())
+        assert wait_for(lambda: add_started.is_set() and not check_button.isEnabled())
         assert not release_check.is_set()
         method, url, payload, token, cookie = adds[0]
         assert (method, url) == ("POST", api.base_url + "/RegisterSections")
@@ -331,18 +319,19 @@ def test_scheduled_dashboard_uses_refreshed_credentials_without_waiting_for_sess
         auth.on_credentials_extracted(dict(refreshed, verification_token="late"))
         assert api.session.headers["__requestverificationtoken"] == "new-token"
         release_check.set()
-        assert monitor.ping_worker.wait(1000)
+        assert wait_for(lambda: not monitor.is_checking_session)
         assert api.session.cookies.get(cookie_name) == "new"
+        assert api.session_state().last_successful_check_at is None
+        assert api.session_state().last_auth_cookie_renewal_at is None
     finally:
         release_check.set()
         release_add.set()
         if monitor.worker is not None:
             monitor.stop_attack()
             assert monitor.worker.wait(3000)
-        if monitor.ping_worker is not None:
-            assert monitor.ping_worker.wait(3000)
         qt_app.processEvents()
         window.close()
+        window.session_keepalive._thread.join(3)
 
 
 def test_stop_during_availability_does_not_send_add(tmp_path):
