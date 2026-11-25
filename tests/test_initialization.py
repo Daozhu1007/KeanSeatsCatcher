@@ -3,9 +3,9 @@ from unittest.mock import Mock
 
 import pytest
 import requests
-from PyQt6.QtCore import Qt
-from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtCore import QAbstractAnimation, QPoint, Qt
+from PyQt6.QtTest import QSignalSpy, QTest
+from PyQt6.QtWidgets import QPushButton, QWidget
 from qfluentwidgets import Flyout
 
 import cloud_cli
@@ -49,34 +49,70 @@ def test_gui_extraction_enables_scoped_reader(tmp_path, monkeypatch, qt_app):
     widget.close()
 
 
-def test_session_status_flyout_toggle_and_popup_mouse_grab(qt_app):
+@pytest.mark.parametrize("dismiss", ["button", "shadow", "outside", "escape"])
+def test_session_status_flyout_dismissal(qt_app, dismiss):
     window = QWidget()
+    window.resize(620, 400)
     button = SessionStatusButton()
     button.setParent(window)
     button.setText("Session: Unchecked")
     button.adjustSize()
+    button.move(420, 20)
+    outside = QPushButton("Outside", window)
+    outside.move(20, 300)
+    outside_clicked = QSignalSpy(outside.clicked)
     window.show()
     try:
         QTest.mouseClick(button, Qt.MouseButton.LeftButton)
-        assert isinstance(qt_app.activePopupWidget(), Flyout)
-        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
-        assert qt_app.activePopupWidget() is None
+        flyout = button.findChild(Flyout)
+        animation = flyout.aniManager.aniGroup
+        animation.setCurrentTime(animation.duration())
+        closed = QSignalSpy(flyout.closed)
+        settled = flyout.pos()
 
-        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
-        flyout = qt_app.activePopupWidget()
-        assert isinstance(flyout, Flyout)
-        # A native popup receives the press even when the cursor is over its trigger.
-        position = flyout.mapFromGlobal(button.mapToGlobal(button.rect().center()))
-        QTest.mousePress(flyout, Qt.MouseButton.LeftButton, pos=position)
-        assert qt_app.activePopupWidget() is flyout
-        qt_app.processEvents()
-        QTest.mouseRelease(button, Qt.MouseButton.LeftButton)
-        assert qt_app.activePopupWidget() is None
+        if dismiss == "escape":
+            QTest.keyClick(window, Qt.Key.Key_Escape)
+        elif dismiss == "shadow":
+            edge = button.rect().bottomRight() - QPoint(12, 0)
+            position = flyout.mapFromGlobal(button.mapToGlobal(edge))
+            assert flyout.rect().contains(position)
+            QTest.mouseClick(flyout, Qt.MouseButton.LeftButton, pos=position)
+        else:
+            QTest.mouseClick(button if dismiss == "button" else outside, Qt.MouseButton.LeftButton)
+        assert len(outside_clicked) == (dismiss == "outside")
+        assert flyout.isVisible() and len(closed) == 0
+        assert animation.direction() == QAbstractAnimation.Direction.Backward
+        animation.setCurrentTime(animation.duration() // 2)
+        assert 0 < flyout.windowOpacity() < 1
+        assert flyout.x() == settled.x() and flyout.y() < settled.y()
+        assert closed.wait(1000)
+        assert button._flyout is None
     finally:
-        popup = qt_app.activePopupWidget()
-        if popup is not None:
-            popup.close()
+        if button._flyout is not None:
+            button._flyout.close()
         window.close()
+
+
+def test_session_status_flyout_reverses_in_place(qt_app):
+    button = SessionStatusButton()
+    button.show()
+    try:
+        button.click()
+        flyout = button.findChild(Flyout)
+        animation = flyout.aniManager.aniGroup
+        animation.setCurrentTime(animation.duration() // 2)
+        for direction in (QAbstractAnimation.Direction.Backward, QAbstractAnimation.Direction.Forward):
+            before = (animation.currentTime(), flyout.pos(), flyout.windowOpacity())
+            button.click()
+            assert animation.direction() == direction
+            assert (animation.currentTime(), flyout.pos(), flyout.windowOpacity()) == before
+            assert button.findChildren(Flyout) == [flyout] and flyout.isVisible()
+        animation.setCurrentTime(animation.duration())
+        assert flyout.windowOpacity() == 1
+    finally:
+        if button._flyout is not None:
+            button._flyout.close()
+        button.close()
 
 
 def test_dashboard_session_flyout_and_persisted_keepalive_preferences(tmp_path, monkeypatch, qt_app):
@@ -123,16 +159,17 @@ def test_dashboard_session_flyout_and_persisted_keepalive_preferences(tmp_path, 
         assert values["next_check"].text() == "—"
 
         monitor.btn_keepalive.click()
+        expected_status = ui_main.i18n.tr("session_state_valid")
+        expected_summary = ui_main.i18n.tr("session_status_summary", expected_status)
         for _ in range(150):
-            if values["last_check"].text() != "—":
+            if monitor.session_status_button.text() == expected_summary:
                 break
             QTest.qWait(10)
         assert values["last_check"].text() != "—"
         assert values["last_renewal"].text() == values["next_check"].text() == "—"
-        assert values["status"].text() == ui_main.i18n.tr("session_state_valid")
+        assert values["status"].text() == expected_status
         assert values["keepalive"].text() == ui_main.i18n.tr("keepalive_state_disabled")
-        assert monitor.session_status_button.text() == ui_main.i18n.tr(
-            "session_status_summary", values["status"].text())
+        assert monitor.session_status_button.text() == expected_summary
         assert send.call_count == 1
     finally:
         if flyout is not None:
