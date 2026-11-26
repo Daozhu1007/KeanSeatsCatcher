@@ -31,7 +31,7 @@ from worker_session import recover_session
 from ui_autocatch import AutoCatchInterface
 from ui_catches import MyCatchesInterface
 from ui_lookup import SectionLookupInterface
-from ui_session import SessionSummary
+from ui_session import create_session_header
 from ui_settings import SettingsInterface
 
 APP_USER_MODEL_ID = "wku.mingtai.keanseatscatcher.v2"
@@ -265,6 +265,7 @@ class BrowserExtractWorker(QThread):
 
 class MonitorInterface(QWidget):
     authentication_requested = pyqtSignal()
+    session_status_refreshed = pyqtSignal(bool, int, object, object, float)
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -284,17 +285,9 @@ class MonitorInterface(QWidget):
         self._checking_session = False
         self._ping_is_current = False
 
-        title = SubtitleLabel(i18n.tr("monitor_title"))
-        title.setStyleSheet("font-size: 26px; font-weight: bold;")
-        # Give the summary room in the header while aligning the form with Auto-Catch.
-        title.setContentsMargins(0, 8, 0, 8)
         header_and_form = QVBoxLayout()
         header_and_form.setSpacing(8)
-        title_row = QHBoxLayout()
-        title_row.setSpacing(12)
-        title_row.addWidget(title, 1)
-        self.session_summary = SessionSummary()
-        title_row.addWidget(self.session_summary, 0, Qt.AlignmentFlag.AlignVCenter)
+        title_row, self.session_summary = create_session_header(i18n.tr("monitor_title"))
         header_and_form.addLayout(title_row)
 
         card = CardWidget()
@@ -374,6 +367,7 @@ class MonitorInterface(QWidget):
 
         self.section_input.editingFinished.connect(self._prefetch_credits)
 
+        self.session_status_refreshed.connect(self.session_summary.update_status)
         self._refresh_session_status()
         self._session_timer = QTimer(self)
         self._session_timer.timeout.connect(self._refresh_session_status)
@@ -409,14 +403,16 @@ class MonitorInterface(QWidget):
 
     def _refresh_session_status(self):
         snapshot = self.session_keepalive.snapshot() if self.session_keepalive is not None else None
-        self.session_summary.update_status(self._keepalive_enabled, self._keepalive_minutes, snapshot)
+        now = datetime.datetime.now().astimezone()
+        monotonic_now = time.monotonic()
+        self.session_status_refreshed.emit(self._keepalive_enabled, self._keepalive_minutes, snapshot, now, monotonic_now)
 
         action = snapshot.action if snapshot else None
         self.btn_ping.setText(i18n.tr("session_checking" if action == "check" else "btn_ping"))
         self.btn_keepalive.setText(i18n.tr("session_keeping_alive" if action == "keepalive" else "btn_keepalive_now"))
         self.btn_ping.setEnabled(bool(snapshot and snapshot.can_check and not self.is_checking_session))
         self.btn_keepalive.setEnabled(bool(snapshot and snapshot.can_keepalive and not self.is_checking_session))
-        cooling_down = snapshot and time.monotonic() < snapshot.session.cooldown_until
+        cooling_down = snapshot and monotonic_now < snapshot.session.cooldown_until
         self.btn_ping.setToolTip(i18n.tr("keepalive_state_cooldown" if cooling_down else "tooltip_ping"))
         self.btn_keepalive.setToolTip(i18n.tr("keepalive_state_cooldown" if cooling_down else "tooltip_keepalive_now"))
 
@@ -849,8 +845,12 @@ class KeanSeatsCatcherApp(FluentWindow):
 
         self.monitor_interface.sibling = self.autocatch_interface
         self.autocatch_interface.sibling = self.monitor_interface
+        self.monitor_interface.session_status_refreshed.connect(self.autocatch_interface.session_summary.update_status)
         self.monitor_interface.configure_keepalive(*self.settings_interface.keepalive_preferences)
         self.settings_interface.keepalive_changed.connect(self.monitor_interface.configure_keepalive)
+        for page in (self.monitor_interface, self.autocatch_interface):
+            page.session_summary.setVisible(self.settings_interface.show_session_status)
+            self.settings_interface.session_status_visibility_changed.connect(page.session_summary.setVisible)
 
         self.addSubInterface(self.monitor_interface, FIF.VIEW, i18n.tr("tab_monitor"))
         self.addSubInterface(self.autocatch_interface, FIF.ZOOM, i18n.tr("tab_autocatch"))

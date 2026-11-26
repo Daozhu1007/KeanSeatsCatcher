@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -9,7 +10,6 @@ from PyQt6.QtTest import QTest
 import cloud_cli
 import core_auth
 import ui_main
-import ui_session
 from registration_reader import DegreePlanRegistrationReader
 from test_registration import client, response, snapshot, S
 
@@ -47,7 +47,8 @@ def test_gui_extraction_enables_scoped_reader(tmp_path, monkeypatch, qt_app):
     widget.close()
 
 
-def test_auto_catch_layout_matches_dashboard(qt_app):
+def test_auto_catch_layout_matches_dashboard(tmp_path, monkeypatch, qt_app):
+    monkeypatch.setattr("i18n.app_dir", str(tmp_path))
     window = ui_main.KeanSeatsCatcherApp()
     dashboard, auto = window.monitor_interface, window.autocatch_interface
     window.stackedWidget.setAnimationEnabled(False)
@@ -57,6 +58,8 @@ def test_auto_catch_layout_matches_dashboard(qt_app):
         qt_app.processEvents()
         window.switchTo(auto)
         qt_app.processEvents()
+        assert auto.session_summary.isVisible()
+        assert auto.session_summary.geometry() == dashboard.session_summary.geometry()
         assert auto.section_input.parentWidget().geometry() == dashboard.section_input.parentWidget().geometry()
         assert auto.log_box.geometry() == dashboard.log_box.geometry()
         assert auto.drop_section_input.y() == auto.interval_input.y() == dashboard.interval_input.y()
@@ -72,7 +75,7 @@ def test_auto_catch_layout_matches_dashboard(qt_app):
         window.close()
 
 
-def test_dashboard_session_summary_and_persisted_keepalive_preferences(tmp_path, monkeypatch, qt_app):
+def test_session_summaries_share_status_and_persisted_settings(tmp_path, monkeypatch, qt_app):
     monkeypatch.setattr("i18n.app_dir", str(tmp_path))
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"Settings": {"Language": "en_US", "KeepBrowserOpen": True}}), encoding="utf-8")
@@ -89,10 +92,11 @@ def test_dashboard_session_summary_and_persisted_keepalive_preferences(tmp_path,
         def now(cls, tz=None):
             return clock[0]
 
-    monkeypatch.setattr(ui_session, "datetime", DisplayTime)
+    monkeypatch.setattr(ui_main, "datetime", SimpleNamespace(datetime=DisplayTime))
     window = ui_main.KeanSeatsCatcherApp()
     monitor, auth, settings = window.monitor_interface, window.auth_interface, window.settings_interface
     summary = monitor.session_summary
+    auto_summary = window.autocatch_interface.session_summary
     auth.auth_manager = Mock()
     try:
         window.show()
@@ -107,9 +111,11 @@ def test_dashboard_session_summary_and_persisted_keepalive_preferences(tmp_path,
         assert not monitor.btn_ping.isEnabled() and not monitor.btn_keepalive.isEnabled()
 
         tr = ui_main.i18n.tr
+        assert settings.show_session_status
         assert summary.isVisible()
-        assert summary.status_label.text() == tr("session_unverified")
-        assert summary.automatic_label.text() == tr("session_auto_waiting")
+        assert not auto_summary.isHidden()
+        assert summary.status_label.text() == auto_summary.status_label.text() == tr("session_unverified")
+        assert summary.automatic_label.text() == auto_summary.automatic_label.text() == tr("session_auto_waiting")
         assert not summary.countdown_progress.isVisible()
 
         auth.on_credentials_extracted(CREDENTIALS)
@@ -118,8 +124,17 @@ def test_dashboard_session_summary_and_persisted_keepalive_preferences(tmp_path,
         assert monitor.btn_ping.isEnabled() and monitor.btn_keepalive.isEnabled()
         assert summary.last_check_label.text() == summary.last_keepalive_label.text() == "—"
         assert tr("session_next_keepalive") in summary.automatic_label.toolTip()
+        assert auto_summary.automatic_label.toolTip() == summary.automatic_label.toolTip()
         assert summary.countdown_progress.isVisible()
         send.assert_not_called()
+
+        log_geometry = monitor.log_box.geometry()
+        settings.session_status_switch.setChecked(False)
+        qt_app.processEvents()
+        assert summary.isHidden() and auto_summary.isHidden()
+        assert monitor.log_box.geometry() == log_geometry
+        assert settings.keepalive_preferences == (True, 10)
+        assert keeper.snapshot().next_due == first_due
 
         settings.keepalive_interval.setCurrentIndex(2)
         assert keeper.snapshot().next_due == first_due + 300
@@ -128,12 +143,16 @@ def test_dashboard_session_summary_and_persisted_keepalive_preferences(tmp_path,
         assert summary.automatic_label.text() == tr("session_auto_off")
         assert not summary.countdown_progress.isVisible()
 
+        settings.session_status_switch.setChecked(True)
+        assert summary.isVisible() and not auto_summary.isHidden()
+        assert auto_summary.automatic_label.text() == tr("session_auto_off")
+
         monitor.btn_ping.click()
         for _ in range(150):
             if not monitor.is_checking_session:
                 break
             QTest.qWait(10)
-        assert summary.status_label.text() == tr("session_expired")
+        assert summary.status_label.text() == auto_summary.status_label.text() == tr("session_expired")
         last_check = summary.last_check_label.text()
         last_check_tooltip = summary.last_check_label.toolTip()
         assert last_check == tr("session_result_expired")
@@ -147,7 +166,8 @@ def test_dashboard_session_summary_and_persisted_keepalive_preferences(tmp_path,
             if summary.last_keepalive_label.text() != "—":
                 break
             QTest.qWait(10)
-        assert summary.last_keepalive_label.text() == tr("session_result_completed")
+        assert (summary.last_keepalive_label.text() == auto_summary.last_keepalive_label.text()
+                == tr("session_result_completed"))
         assert summary.last_keepalive_age.text() == tr("session_time_just_now")
         assert summary.last_keepalive_label.toolTip()
         assert summary.last_check_label.text() == last_check
@@ -164,9 +184,10 @@ def test_dashboard_session_summary_and_persisted_keepalive_preferences(tmp_path,
         for seconds, unit, amount in ((35.5, "seconds", 35), (125.5, "minutes", 2)):
             clock[0] = completed + timedelta(seconds=seconds)
             QTest.qWait(50)
-            assert summary.last_check_age.text() == tr(f"session_time_{unit}_ago", amount)
+            assert summary.last_check_age.text() == auto_summary.last_check_age.text() == tr(f"session_time_{unit}_ago", amount)
             assert summary.last_check_age.toolTip() == last_check_tooltip
             assert [widget.geometry() for widget in watched_widgets] == original_geometry
+        settings.session_status_switch.setChecked(False)
     finally:
         monitor._session_timer.stop()
         window.close()
@@ -177,6 +198,9 @@ def test_dashboard_session_summary_and_persisted_keepalive_preferences(tmp_path,
     try:
         assert reopened.settings_interface.keepalive_preferences == (False, 15)
         assert reopened.settings_interface.browser_switch.isChecked()
+        assert not reopened.settings_interface.show_session_status
+        assert reopened.monitor_interface.session_summary.isHidden()
+        assert reopened.autocatch_interface.session_summary.isHidden()
     finally:
         reopened.close()
 

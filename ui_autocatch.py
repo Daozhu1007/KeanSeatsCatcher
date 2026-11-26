@@ -2,13 +2,14 @@ import datetime
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
-from qfluentwidgets import (SubtitleLabel, BodyLabel, LineEdit,
+from qfluentwidgets import (BodyLabel, LineEdit,
                             PushButton, TextEdit, CardWidget,
                             SwitchButton,
                             FluentIcon as FIF, InfoBar, InfoBarPosition)
 
 from i18n import i18n
 from auto_catch_worker import AutoCatchWorker, STATE_IDLE, STATE_POLLING, STATE_ATTACKING, STATE_UNAVAILABLE
+from ui_session import create_session_header
 
 
 class AutoCatchInterface(QWidget):
@@ -16,7 +17,7 @@ class AutoCatchInterface(QWidget):
         super().__init__(parent=parent)
         self.setObjectName("AutoCatchInterface")
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(24, 32, 24, 24)
+        self.layout.setContentsMargins(24, 24, 24, 24)
         self.layout.setSpacing(16)
 
         self.api_engine = None
@@ -25,9 +26,10 @@ class AutoCatchInterface(QWidget):
         self._is_running = False
         self._relogin_required = False
 
-        title = SubtitleLabel(i18n.tr("autocatch_title"))
-        title.setStyleSheet("font-size: 26px; font-weight: bold;")
-        self.layout.addWidget(title)
+        header_and_form = QVBoxLayout()
+        header_and_form.setSpacing(8)
+        title_row, self.session_summary = create_session_header(i18n.tr("autocatch_title"))
+        header_and_form.addLayout(title_row)
 
         card = CardWidget()
         card_layout = QVBoxLayout(card)
@@ -75,7 +77,8 @@ class AutoCatchInterface(QWidget):
         btn_row.addStretch(1)
         card_layout.addLayout(btn_row)
 
-        self.layout.addWidget(card)
+        header_and_form.addWidget(card)
+        self.layout.addLayout(header_and_form)
 
         log_header = QHBoxLayout()
         log_title = BodyLabel(i18n.tr("lbl_log"))

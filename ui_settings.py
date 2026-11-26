@@ -10,6 +10,7 @@ from session_keepalive import KEEPALIVE_INTERVAL_MINUTES, KEEPALIVE_INTERVAL_SEC
 
 class SettingsInterface(ScrollArea):
     keepalive_changed = pyqtSignal(bool, int)
+    session_status_visibility_changed = pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -83,6 +84,21 @@ class SettingsInterface(ScrollArea):
         self.keepalive_switch.checkedChanged.connect(self._on_keepalive_changed)
         self.keepalive_interval.currentIndexChanged.connect(self._on_keepalive_changed)
 
+        session_status_card = CardWidget()
+        session_status_layout = QHBoxLayout(session_status_card)
+        session_status_layout.setContentsMargins(20, 16, 20, 16)
+        session_status_layout.setSpacing(15)
+        session_status_title = i18n.tr("settings_show_session_status")
+        session_status_layout.addWidget(BodyLabel(session_status_title), 1)
+        self.session_status_switch = SwitchButton()
+        self.session_status_switch.setAccessibleName(session_status_title)
+        self.session_status_switch.setOnText(i18n.tr("settings_keepalive_on"))
+        self.session_status_switch.setOffText(i18n.tr("keepalive_state_disabled"))
+        self.session_status_switch.setChecked(settings.get("ShowSessionStatus") is not False)
+        self.session_status_switch.checkedChanged.connect(self._on_session_status_visibility_changed)
+        session_status_layout.addWidget(self.session_status_switch)
+        self.layout.addWidget(session_status_card)
+
         # --- Language ---
         lang_card = CardWidget()
         lang_layout = QHBoxLayout(lang_card)
@@ -128,6 +144,16 @@ class SettingsInterface(ScrollArea):
         settings["SessionKeepaliveIntervalMinutes"] = minutes
         save_config(config)
         self.keepalive_changed.emit(enabled, minutes)
+
+    @property
+    def show_session_status(self):
+        return self.session_status_switch.isChecked()
+
+    def _on_session_status_visibility_changed(self, checked):
+        config = load_config()
+        config.setdefault("Settings", {})["ShowSessionStatus"] = checked
+        save_config(config)
+        self.session_status_visibility_changed.emit(checked)
 
     def _on_lang_changed(self, index):
         lang_code = self.lang_combo.itemData(index)

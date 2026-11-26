@@ -1,13 +1,12 @@
-import time
 from datetime import datetime
 from math import ceil, isfinite
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QVBoxLayout
+from PyQt6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QSizePolicy, QVBoxLayout
 from qfluentwidgets import (
     CaptionLabel, FluentIcon as FIF, IconWidget, ProgressBar, SimpleCardWidget,
-    StrongBodyLabel, VerticalSeparator,
+    StrongBodyLabel, SubtitleLabel, VerticalSeparator,
 )
 
 from i18n import i18n
@@ -143,7 +142,7 @@ class SessionSummary(SimpleCardWidget):
         layout.addWidget(age, row, 2)
         return outcome, age
 
-    def update_status(self, enabled, minutes, snapshot):
+    def update_status(self, enabled, minutes, snapshot, now, monotonic_now):
         status = snapshot.session.status if snapshot else None
         key, icon, colors = SESSION_STYLES[status]
         text = i18n.tr(key)
@@ -156,14 +155,13 @@ class SessionSummary(SimpleCardWidget):
                 f"QFrame {{ background-color: {tint.name(QColor.NameFormat.HexArgb)}; border-radius: 7px; }}"
             )
 
-        now = datetime.now().astimezone()
-        self._update_automatic(enabled, minutes, snapshot, now)
+        self._update_automatic(enabled, minutes, snapshot, now, monotonic_now)
         self._update_history(self.last_check_label, self.last_check_age, snapshot.last_check if snapshot else None,
                              "session_last_check", now)
         self._update_history(self.last_keepalive_label, self.last_keepalive_age,
                              snapshot.last_keepalive if snapshot else None, "session_last_keepalive", now)
 
-    def _update_automatic(self, enabled, minutes, snapshot, now):
+    def _update_automatic(self, enabled, minutes, snapshot, now, monotonic_now):
         state = snapshot.state if snapshot else ("waiting" if enabled else "disabled")
         if state == "running" and snapshot.recovering:
             state = "recovering"
@@ -178,7 +176,7 @@ class SessionSummary(SimpleCardWidget):
         counting_down = deadline is not None and isfinite(deadline)
         self.countdown_progress.setVisible(counting_down)
         if counting_down:
-            remaining = max(0, deadline - time.monotonic())
+            remaining = max(0, deadline - monotonic_now)
             clock = self._countdown_text(remaining)
             text = i18n.tr(COUNTDOWN_LABELS.get(state, "session_next_countdown"), clock)
             if state == "cooldown":
@@ -237,3 +235,35 @@ class SessionSummary(SimpleCardWidget):
         age.setText(relative)
         label.setToolTip(tooltip)
         age.setToolTip(tooltip)
+
+
+class _SessionPageTitle(SubtitleLabel):
+    def __init__(self, text):
+        super().__init__()
+        self._full_text = text
+        self.setText(text)
+        self.setAccessibleName(text)
+        self.setStyleSheet("font-size: 26px; font-weight: bold;")
+        self.setContentsMargins(0, 8, 0, 8)
+        policy = self.sizePolicy()
+        policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        self.setSizePolicy(policy)
+
+    def resizeEvent(self, event):
+        text = self.fontMetrics().elidedText(self._full_text, Qt.TextElideMode.ElideRight, self.contentsRect().width())
+        self.setText(text)
+        self.setToolTip(self._full_text if text != self._full_text else "")
+        super().resizeEvent(event)
+
+
+def create_session_header(title_text):
+    title = _SessionPageTitle(title_text)
+    summary = SessionSummary()
+    # Reserve the header height when the summary is hidden.
+    title.setMinimumHeight(summary.sizeHint().height())
+
+    title_row = QHBoxLayout()
+    title_row.setSpacing(12)
+    title_row.addWidget(title, 1)
+    title_row.addWidget(summary, 0, Qt.AlignmentFlag.AlignVCenter)
+    return title_row, summary

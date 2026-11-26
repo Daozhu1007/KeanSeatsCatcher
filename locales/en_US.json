@@ -149,6 +149,7 @@
     "settings_keep_browser_open": "Keep Browser Open",
     "settings_keep_browser_open_desc": "Do not close the browser automatically after successful authentication.",
     "settings_keepalive_on": "On",
+    "settings_show_session_status": "Show Session Status",
     "settings_language": "Language",
     "settings_language_desc": "Select the application display language.",
     "msg_lang_changed": "Language Changed",
