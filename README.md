@@ -67,6 +67,20 @@ ui_main.py  →  PyQt6 + qfluentwidgets
 | **Event Logs** | JSONL audit trail with requests, redacted responses, per-Section results and timings in `~/.keanseatscatcher/logs` |
 | **My Catches** | Confirmed catches with request details, account filtering and individual record deletion. History lives in `~/.keanseatscatcher/catches.sqlite3` across Portable upgrades. |
 
+In **Authentication**, enable **Use KSC browser profile** to reuse a dedicated
+Edge or Chrome profile for sign-in and session recovery. Each browser has its
+own folder under `%USERPROFILE%\.keanseatscatcher\browser-profiles`. If the
+browser offers to save your password, that choice belongs to its password
+manager. A valid SSO session can sign in directly. Okta may still prompt for
+your password or MFA. After sign-in, use **Login Complete, Extract Credentials**
+as usual. Recovery accepts credentials for the active student account only.
+
+Turn the option off to launch with a temporary profile. **Clear browser profile
+data** closes the KSC profile browser and removes cookies, site data and any
+passwords saved in both dedicated profiles.
+With **Keep Browser Open**, the dedicated browser stays open after extraction
+until KSC exits or you close the window.
+
 ### 2. CLI Headless Mode (Linux Server · Cloud Phantom)
 
 ```

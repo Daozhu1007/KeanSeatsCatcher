@@ -15,13 +15,12 @@ from PyQt6.QtGui import QPixmap, QIcon, QIntValidator, QDesktopServices, QTextCu
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal, QUrl, QObject
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
 from qfluentwidgets import (FluentWindow, SubtitleLabel, BodyLabel, LineEdit,
-                            PushButton, TextEdit, CardWidget,
-                            SwitchButton,
+                            PushButton, TextEdit, CardWidget, CheckBox, MessageBox, SwitchButton,
                             Theme, setTheme, qconfig, NavigationItemPosition,
                             FluentIcon as FIF, InfoBar, InfoBarPosition,
                             ScrollArea)
 
-from i18n import i18n, load_config
+from i18n import i18n, load_config, save_config
 from core_auth import KeanAuthManager
 from core_api import KeanApiClient, SessionExpiredError
 from registration_state import SessionStatus
@@ -261,6 +260,22 @@ class BrowserExtractWorker(QThread):
         except Exception as exc:
             credentials = {"error": type(exc).__name__}
         self.result_signal.emit(credentials)
+
+
+class BrowserClearWorker(QThread):
+    finished_signal = pyqtSignal(bool, str)
+
+    def __init__(self, auth_manager):
+        super().__init__()
+        self.auth_manager = auth_manager
+
+    def run(self):
+        try:
+            self.auth_manager.clear_browser_profiles()
+        except (OSError, RuntimeError) as exc:
+            self.finished_signal.emit(False, str(exc))
+        else:
+            self.finished_signal.emit(True, "")
 
 
 class MonitorInterface(QWidget):
@@ -574,7 +589,8 @@ class AuthInterface(QWidget):
         self.layout = QVBoxLayout(self)
 
         self.layout.setContentsMargins(24, 32, 24, 24)
-        self.auth_manager = KeanAuthManager()
+        persistent = load_config().get("Settings", {}).get("PersistentBrowserProfile") is True
+        self.auth_manager = KeanAuthManager(persistent_profile=persistent)
         self.monitor = monitor
         self.api_engine = None
 
@@ -600,17 +616,49 @@ class AuthInterface(QWidget):
         card_layout.addWidget(self.btn_login)
         card_layout.addWidget(self.btn_extract)
 
+        profile_row = QHBoxLayout()
+        self.profile_checkbox = CheckBox(i18n.tr("auth_use_browser_profile"))
+        self.profile_checkbox.setChecked(persistent)
+        self.btn_clear_profile = PushButton(i18n.tr("auth_clear_browser_profile"))
+        profile_row.addWidget(self.profile_checkbox, 1)
+        profile_row.addWidget(self.btn_clear_profile)
+        card_layout.addLayout(profile_row)
+
+        profile_info = BodyLabel(i18n.tr("auth_browser_profile_info"))
+        profile_info.setWordWrap(True)
+        profile_info.setStyleSheet("color: #a0a0a0;")
+        card_layout.addWidget(profile_info)
+
         self.layout.addWidget(card)
         self.layout.addStretch(1)
 
         self.btn_login.clicked.connect(self.handle_login)
         self.btn_extract.clicked.connect(self.handle_extract)
+        self.profile_checkbox.toggled.connect(self.on_profile_changed)
+        self.btn_clear_profile.clicked.connect(self.handle_clear_profile)
+
+    def on_profile_changed(self, checked):
+        config = load_config()
+        config.setdefault("Settings", {})["PersistentBrowserProfile"] = checked
+        if save_config(config):
+            self.auth_manager.persistent_profile = checked
+            return
+        self.profile_checkbox.blockSignals(True)
+        self.profile_checkbox.setChecked(not checked)
+        self.profile_checkbox.blockSignals(False)
+        InfoBar.error(i18n.tr("auth_title"), i18n.tr("err_browser_profile_preference"),
+                      duration=5000, parent=self)
+
+    def _set_browser_controls_enabled(self, enabled):
+        self.btn_login.setEnabled(enabled)
+        self.profile_checkbox.setEnabled(enabled)
+        self.btn_clear_profile.setEnabled(enabled)
 
     def handle_login(self):
         if self.monitor and not self.monitor.can_refresh_session():
             self._show_busy()
             return
-        self.btn_login.setEnabled(False)
+        self._set_browser_controls_enabled(False)
         self.btn_extract.setEnabled(False)
         InfoBar.info(i18n.tr("msg_launching_browser"), i18n.tr("msg_please_wait"), duration=3000, parent=self)
 
@@ -621,7 +669,7 @@ class AuthInterface(QWidget):
         self.launch_worker.start()
 
     def on_browser_launched(self, success, msg):
-        self.btn_login.setEnabled(True)
+        self._set_browser_controls_enabled(True)
         if success:
             self.btn_extract.setEnabled(True)
             InfoBar.success(i18n.tr("msg_browser_ready"), i18n.tr("msg_browser_login_hint"), duration=5000, parent=self)
@@ -632,11 +680,35 @@ class AuthInterface(QWidget):
         if self.monitor and not self.monitor.can_refresh_session():
             self._show_busy()
             return
-        self.btn_login.setEnabled(False)
+        self._set_browser_controls_enabled(False)
         self.btn_extract.setEnabled(False)
         self.extract_worker = BrowserExtractWorker(self.auth_manager)
         self.extract_worker.result_signal.connect(self.on_credentials_extracted)
         self.extract_worker.start()
+
+    def handle_clear_profile(self):
+        dialog = MessageBox(i18n.tr("auth_clear_browser_profile"),
+                            i18n.tr("auth_confirm_clear_browser_profile"), self.window())
+        dialog.yesButton.setText(i18n.tr("auth_clear_browser_profile_confirm"))
+        if not dialog.exec():
+            return
+
+        self._extract_after_clear = (self.btn_extract.isEnabled()
+                                     and not self.auth_manager.uses_persistent_browser)
+        self.btn_extract.setEnabled(False)
+        self._set_browser_controls_enabled(False)
+        self.clear_worker = BrowserClearWorker(self.auth_manager)
+        self.clear_worker.finished_signal.connect(self.on_profiles_cleared)
+        self.clear_worker.start()
+
+    def on_profiles_cleared(self, success, detail):
+        self._set_browser_controls_enabled(True)
+        self.btn_extract.setEnabled(self._extract_after_clear)
+        if success:
+            InfoBar.success(i18n.tr("auth_browser_profile_cleared"),
+                            i18n.tr("auth_browser_profile_clear_done"), duration=5000, parent=self)
+        else:
+            InfoBar.error(i18n.tr("auth_browser_profile_clear_failed"), detail, duration=8000, parent=self)
 
     def _show_busy(self):
         InfoBar.warning(i18n.tr("auth_title"), i18n.tr("msg_auth_busy"), duration=5000, parent=self)
@@ -645,10 +717,11 @@ class AuthInterface(QWidget):
     def is_browser_busy(self):
         return any(worker is not None and worker.isRunning()
                    for worker in (getattr(self, "launch_worker", None),
-                                  getattr(self, "extract_worker", None)))
+                                  getattr(self, "extract_worker", None),
+                                  getattr(self, "clear_worker", None)))
 
     def on_credentials_extracted(self, credentials):
-        self.btn_login.setEnabled(True)
+        self._set_browser_controls_enabled(True)
         self.btn_extract.setEnabled(True)
         if "error" in credentials:
             InfoBar.error(i18n.tr("msg_extract_failed"), credentials["error"], duration=5000, parent=self)
@@ -673,9 +746,8 @@ class AuthInterface(QWidget):
         else:
             self.api_engine.update_credentials(cookies, token, student_id=student_id)
 
-        config = load_config()
-        if not config.get("Settings", {}).get("KeepBrowserOpen", False):
-            self.auth_manager.close_browser()
+        keep_open = load_config().get("Settings", {}).get("KeepBrowserOpen", False)
+        self.auth_manager.finish_login(keep_open=keep_open)
 
         self.btn_extract.setEnabled(False)
         self.btn_login.setText(i18n.tr("btn_relogin"))
@@ -830,7 +902,7 @@ class KeanSeatsCatcherApp(FluentWindow):
         self.auth_interface.engine_ready_signal.connect(self.lookup_interface.set_api_engine)
         self.auth_interface.engine_ready_signal.connect(self.catches_interface.bind_engine)
         self.monitor_interface.authentication_requested.connect(lambda: self.switchTo(self.auth_interface))
-        recovery_auth = KeanAuthManager()
+        recovery_auth = self.auth_interface.auth_manager
         self.autocatch_interface.set_auth_manager(recovery_auth)
         self.monitor_interface.auth_manager = recovery_auth
 
@@ -861,6 +933,14 @@ class KeanSeatsCatcherApp(FluentWindow):
         self.addSubInterface(self.about_interface, FIF.INFO, i18n.tr("tab_about"), position=NavigationItemPosition.BOTTOM)
 
         self.navigationInterface.expand()
+        self.monitor_interface.setFocus()
+
+    def switchTo(self, interface):
+        if (interface in (self.monitor_interface, self.autocatch_interface)
+                and interface is not self.stackedWidget.currentWidget()):
+            # Seed the incoming page's focus before QStackedWidget restores it.
+            interface.setFocus()
+        super().switchTo(interface)
 
     def start_session_keepalive(self, engine):
         """Own global session maintenance once credentials exist."""
@@ -919,8 +999,13 @@ class KeanSeatsCatcherApp(FluentWindow):
             pass
 
     def closeEvent(self, event):
+        if self.auth_interface.is_browser_busy:
+            event.ignore()
+            QTimer.singleShot(100, self.close)
+            return
         if self.session_keepalive is not None:
             self.session_keepalive.stop()
+        self.auth_interface.auth_manager.close_persistent_browser()
         super().closeEvent(event)
 
 

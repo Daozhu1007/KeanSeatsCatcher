@@ -5,6 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 import requests
+from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
 
 import cloud_cli
@@ -75,6 +76,62 @@ def test_auto_catch_layout_matches_dashboard(tmp_path, monkeypatch, qt_app):
         window.close()
 
 
+def test_section_ids_take_focus_via_mouse_or_tab_after_navigation(tmp_path, monkeypatch, qt_app):
+    monkeypatch.setattr("i18n.app_dir", str(tmp_path))
+    window = ui_main.KeanSeatsCatcherApp()
+    dashboard, auto = window.monitor_interface, window.autocatch_interface
+    settings = window.settings_interface
+    window.stackedWidget.setAnimationEnabled(False)
+    window.show()
+    window.activateWindow()
+    try:
+        qt_app.processEvents()
+        QTest.mouseClick(dashboard.section_input, Qt.MouseButton.LeftButton)
+        assert dashboard.section_input.hasFocus()
+
+        window.switchTo(auto)
+        assert not auto.section_input.hasFocus()
+        QTest.keyClick(qt_app.focusWidget(), Qt.Key.Key_Tab)
+        assert auto.section_input.hasFocus()
+
+        window.switchTo(settings)
+        settings.session_status_switch.setChecked(False)
+        window.switchTo(auto)
+        assert not auto.section_input.hasFocus()
+        QTest.mouseClick(auto.section_input, Qt.MouseButton.LeftButton)
+        assert auto.section_input.hasFocus()
+
+        window.switchTo(dashboard)
+        assert not dashboard.section_input.hasFocus()
+        QTest.keyClick(qt_app.focusWidget(), Qt.Key.Key_Tab)
+        assert dashboard.section_input.hasFocus()
+    finally:
+        window.close()
+
+
+def test_browser_profile_preference_is_optional_and_shared_with_recovery(tmp_path, monkeypatch, qt_app):
+    monkeypatch.setattr("i18n.app_dir", str(tmp_path))
+    window = ui_main.KeanSeatsCatcherApp()
+    auth = window.auth_interface
+    try:
+        assert not auth.profile_checkbox.isChecked()
+        auth.profile_checkbox.setChecked(True)
+        assert window.monitor_interface.auth_manager is auth.auth_manager
+        assert window.autocatch_interface.auth_manager is auth.auth_manager
+        assert auth.auth_manager.persistent_profile
+    finally:
+        window.close()
+
+    reopened = ui_main.AuthInterface()
+    try:
+        assert reopened.profile_checkbox.isChecked()
+        assert reopened.auth_manager.persistent_profile
+        reopened.profile_checkbox.setChecked(False)
+        assert not reopened.auth_manager.persistent_profile
+    finally:
+        reopened.close()
+
+
 def test_session_summaries_share_status_and_persisted_settings(tmp_path, monkeypatch, qt_app):
     monkeypatch.setattr("i18n.app_dir", str(tmp_path))
     config = tmp_path / "config.json"
@@ -99,9 +156,12 @@ def test_session_summaries_share_status_and_persisted_settings(tmp_path, monkeyp
     auto_summary = window.autocatch_interface.session_summary
     auth.auth_manager = Mock()
     try:
+        window.resize(1200, 650)
         window.show()
         qt_app.processEvents()
         nav_panel = window.navigationInterface.panel
+        nav_panel.expandAni.setCurrentTime(nav_panel.expandAni.duration())
+        qt_app.processEvents()
         assert nav_panel.menuButton.parentWidget() is nav_panel and nav_panel.menuButton.isHidden()
         assert settings.keepalive_preferences == (True, 10)
         assert [settings.keepalive_interval.itemData(i) for i in range(3)] == [5, 10, 15]
@@ -179,6 +239,7 @@ def test_session_summaries_share_status_and_persisted_settings(tmp_path, monkeyp
         completed = datetime.fromtimestamp(keeper.snapshot().last_check.completed_at).astimezone()
         assert last_check_tooltip.endswith(completed.strftime("%Y-%m-%d %H:%M:%S %z"))
         watched_widgets = (summary, summary.last_check_age, summary.last_keepalive_age, monitor.log_box)
+        qt_app.processEvents()
         original_geometry = [widget.geometry() for widget in watched_widgets]
         monitor._session_timer.start(10)
         for seconds, unit, amount in ((35.5, "seconds", 35), (125.5, "minutes", 2)):

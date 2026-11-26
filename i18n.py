@@ -54,6 +54,8 @@ def save_config(config):
             json.dump(config, f, indent=4, ensure_ascii=False)
     except Exception as e:
         print(f"[ERROR] Failed to save config: {e}")
+        return False
+    return True
 
 
 cfg = load_config()

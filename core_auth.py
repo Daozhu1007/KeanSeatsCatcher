@@ -1,160 +1,159 @@
 import json
+import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from urllib.parse import urlsplit
+
 from selenium import webdriver
 from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import (WebDriverException, InvalidSessionIdException,
-                                        TimeoutException, NoSuchElementException)
+from selenium.common.exceptions import WebDriverException, TimeoutException, NoSuchElementException
 
+from browser_profiles import BrowserProfiles
 from i18n import i18n
 
 
 class KeanAuthManager:
-    def __init__(self):
+    def __init__(self, *, persistent_profile=False):
         self.driver = None
         self.login_url = "https://kean-ss.colleague.elluciancloud.com/Student/Planning/DegreePlans"
+        self.persistent_profile = persistent_profile
+        self._profiles = BrowserProfiles()
+        self._profile_lease = None
+        self._browser_name = None
+        self._signing_in = False
+        self._browser_operation = threading.RLock()
 
     def open_login_page(self, detach=False):
-        if self.driver is not None:
-            try:
-                self.driver.get(self.login_url)
-                return
-            except WebDriverException:
+        with self._browser_operation:
+            if self.driver is not None:
+                if self.persistent_profile == (self._profile_lease is not None):
+                    try:
+                        self.driver.get(self.login_url)
+                        self._signing_in = True
+                        return
+                    except WebDriverException:
+                        pass
                 self.close_browser()
-        self.launch_browser(detach=detach)
+            self.launch_browser(detach=detach)
+            self._signing_in = True
 
     def launch_browser(self, headless: bool = False, detach: bool = False):
-        """
-        Per-browser 15-second timeout prevents a hung driver download
-        from freezing the entire chain.
+        with self._browser_operation:
+            if self.driver is None:
+                self._browser_name, self.driver, self._profile_lease = self._launch(
+                    headless, detach, self.persistent_profile)
 
-        On macOS Safari is tried first — it uses the built-in
-        safaridriver (zero download), so it works even on slow/flaky
-        networks where the Selenium Manager CDN is unreachable.
-        """
+    def _launch(self, headless, detach, persistent):
+        browsers = list(self._profiles.browsers)
+        if persistent:
+            preferred = self._profiles.preferred_browser()
+            browsers.sort(key=lambda browser: browser != preferred)
+        elif sys.platform == "darwin" and not headless:
+            # Safari's built-in driver needs no download.
+            browsers = ["Safari", "Chrome", "Edge"]
+
         last_error = None
-
-        chains = self._browser_chain(headless, detach)
-        for name, fn in chains:
-            # Guard: a previous browser's background thread may have
-            # finished after its timeout, setting self.driver.
-            if self.driver is not None:
-                print(f"[INFO] {name} browser launched successfully.")
-                return
+        for name in browsers:
             try:
-                self._try_browser_with_timeout(name, fn)
-                return
+                driver, lease = self._try_browser_with_timeout(
+                    name, lambda name=name: self._start_browser(name, headless, detach, persistent))
             except (WebDriverException, TimeoutError) as e:
-                # The thread may finish moments after the timeout fires.
-                if self.driver is not None:
-                    print(f"[INFO] {name} browser launched successfully.")
-                    return
                 print(f"{name} unavailable: {e}")
                 last_error = e
+            else:
+                print(f"[INFO] {name} browser launched successfully.")
+                return name, driver, lease
 
         raise RuntimeError(
             "No supported browser found. Please install Chrome or Edge.\n"
             f"Last error: {last_error}"
         )
 
-    def _browser_chain(self, headless, detach):
-        """Return the ordered list of (name, callable) to try."""
-        import sys
-        if sys.platform == "darwin" and not headless:
-            # Safari uses built-in driver — no download, instant start
-            # Safari does not support the "detach" experimental option
-            return [
-                ("Safari",  lambda: self._try_safari()),
-                ("Chrome",  lambda: self._try_chrome(headless, detach)),
-                ("Edge",    lambda: self._try_edge(headless, detach)),
-            ]
-        return [
-            ("Edge",    lambda: self._try_edge(headless, detach)),
-            ("Chrome",  lambda: self._try_chrome(headless, detach)),
-        ]
+    def _start_browser(self, name, headless, detach, persistent):
+        lease = self._profiles.acquire(name) if persistent else None
+        driver = None
+        try:
+            if name == "Safari":
+                driver = webdriver.Safari()
+            else:
+                options = EdgeOptions() if name == "Edge" else ChromeOptions()
+                switches = ["enable-automation"]
+                options.add_argument('--disable-blink-features=AutomationControlled')
+                options.add_experimental_option('useAutomationExtension', False)
+                if persistent:
+                    options.add_argument(f"--user-data-dir={self._profiles.path(name)}")
+                    options.add_argument("--disable-background-mode")
+                    # Let the browser use its native credential storage.
+                    switches.extend(("password-store", "use-mock-keychain"))
+                elif detach:
+                    options.add_experimental_option("detach", True)
+                options.add_experimental_option("excludeSwitches", switches)
+                if headless:
+                    options.add_argument("--headless" if name == "Edge" else "--headless=new")
+                    options.add_argument("--disable-gpu")
+                    options.add_argument("--window-size=1920,1080")
 
-    def _try_edge(self, headless: bool, detach: bool = False):
-        options = EdgeOptions()
-        options.add_argument('--disable-blink-features=AutomationControlled')
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-        if detach:
-            options.add_experimental_option("detach", True)
-        if headless:
-            options.add_argument('--headless')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--window-size=1920,1080')
+                factory = webdriver.Edge if name == "Edge" else webdriver.Chrome
+                driver = factory(options=options)
+                driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                    'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined});'
+                })
+            if persistent:
+                driver.set_page_load_timeout(15)
+            driver.get(self.login_url)
+            return driver, lease
+        except BaseException:
+            self._quit_browser(driver, lease)
+            raise
 
-        self.driver = webdriver.Edge(options=options)
-        self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-            'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined});'
-        })
-        self.driver.get(self.login_url)
-        print("[INFO] Edge browser launched successfully.")
-
-    def _try_chrome(self, headless: bool, detach: bool = False):
-        options = ChromeOptions()
-        options.add_argument('--disable-blink-features=AutomationControlled')
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-        if detach:
-            options.add_experimental_option("detach", True)
-        if headless:
-            options.add_argument('--headless=new')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--window-size=1920,1080')
-
-        self.driver = webdriver.Chrome(options=options)
-        self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-            'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined});'
-        })
-        self.driver.get(self.login_url)
-        print("[INFO] Chrome browser launched successfully.")
-
-    def _try_safari(self):
-        self.driver = webdriver.Safari()
-        self.driver.get(self.login_url)
-        print("[INFO] Safari browser launched successfully.")
-
-    def _try_browser_with_timeout(self, name, fn, timeout=15):
-        """
-        Run *fn* in a daemon thread with a timeout guard.
-
-        CRITICAL: executor.shutdown(wait=False) is used instead of the
-        ``with`` statement. The context-manager __exit__ calls
-        shutdown(wait=True), which would block until the hung thread
-        finishes — defeating the purpose of the timeout.
-        """
+    def _try_browser_with_timeout(self, name, launch, timeout=15):
         print(f"Trying {name} browser (timeout={timeout}s)...")
         executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(launch)
         try:
-            future = executor.submit(fn)
-            future.result(timeout=timeout)
-        except FutureTimeoutError:
-            raise TimeoutError(f"{name} launch timed out after {timeout}s")
+            return future.result(timeout=timeout)
+        except FutureTimeoutError as exc:
+            # A late driver still owns its profile lease and closes itself
+            # without replacing the browser chosen by the fallback chain.
+            future.add_done_callback(self._discard_launch)
+            raise TimeoutError(f"{name} launch timed out after {timeout}s") from exc
         finally:
             executor.shutdown(wait=False)
 
+    def _discard_launch(self, future):
+        if future.exception() is None:
+            self._quit_browser(*future.result())
+
+    def _on_degree_plans(self, driver):
+        current, target = urlsplit(driver.current_url), urlsplit(self.login_url)
+        return (current.scheme == target.scheme and current.netloc == target.netloc
+                and current.path.rstrip("/").lower() == target.path.lower())
+
     def extract_credentials(self) -> dict:
-        if not self.driver:
+        with self._browser_operation:
+            return self._extract_credentials(self.driver)
+
+    def _extract_credentials(self, driver):
+        if not driver:
             return {"error": i18n.tr("err_no_browser")}
 
         print("Checking page state...")
         try:
-            if "DegreePlans" not in self.driver.current_url:
+            if not self._on_degree_plans(driver):
                 return {"error": i18n.tr("err_not_on_page")}
-        except (WebDriverException, InvalidSessionIdException):
+        except WebDriverException:
             return {"error": i18n.tr("err_browser_disconnected")}
 
         print("Extracting API credentials & Student ID...")
 
         try:
-            cookies_list = self.driver.get_cookies()
-        except (WebDriverException, InvalidSessionIdException):
+            cookies_list = driver.get_cookies()
+        except WebDriverException:
             return {"error": i18n.tr("err_browser_disconnected_cookies")}
 
         js_script = """
@@ -191,8 +190,8 @@ class KeanAuthManager:
         """
 
         try:
-            result_json = self.driver.execute_script(js_script)
-        except (WebDriverException, InvalidSessionIdException):
+            result_json = driver.execute_script(js_script)
+        except WebDriverException:
             return {"error": i18n.tr("err_browser_disconnected_script")}
 
         result = json.loads(result_json)
@@ -209,8 +208,8 @@ class KeanAuthManager:
             return {"error": i18n.tr("err_no_student_id")}
 
         try:
-            user_agent = self.driver.execute_script("return navigator.userAgent;")
-        except (WebDriverException, InvalidSessionIdException):
+            user_agent = driver.execute_script("return navigator.userAgent;")
+        except WebDriverException:
             user_agent = "unknown"
 
         credentials = {
@@ -224,70 +223,49 @@ class KeanAuthManager:
         return credentials
 
     def silent_relogin(self, headless: bool = False) -> dict:
-        """
-        Re-authenticate without user interaction.
+        """Recover through the normal KeanWISE redirect. Okta can require a manual sign-in."""
+        if not self._browser_operation.acquire(blocking=False):
+            raise RuntimeError(i18n.tr("err_browser_auth_in_progress"))
+        try:
+            persistent = self.persistent_profile
+            if persistent and self._profile_lease is not None:
+                try:
+                    # Detect a retained browser that the user has since closed.
+                    self.driver.current_window_handle
+                except WebDriverException:
+                    self.close_browser()
+                else:
+                    if self._signing_in:
+                        raise RuntimeError(i18n.tr("err_browser_auth_in_progress"))
+                    self.driver.get(self.login_url)
+                    return self._recover(self.driver, persistent)
 
-        Launches a fresh browser (reusing the local Edge profile so saved
-        credentials persist). If redirected to Okta, automatically clicks
-        the login button — no 2FA is required when the browser profile's
-        session is still warm.
-
-        Set headless=True for cloud/headless deployments.
-
-        Returns the same credential dict as extract_credentials() on success.
-        Raises RuntimeError if the automated flow times out.
-        """
-        if self.driver is not None:
+            _, driver, lease = self._launch(headless, False, persistent)
             try:
-                self.driver.quit()
-            except Exception:
-                pass
+                return self._recover(driver, persistent)
             finally:
-                self.driver = None
+                self._quit_browser(driver, lease)
+        finally:
+            self._browser_operation.release()
 
-        print("[Auto-Recovery] Launching browser for silent re-authentication...")
-        self.launch_browser(headless=headless)
+    def _recover(self, driver, persistent):
+        if not persistent:
+            # Preserve the existing temporary/headless workflow.
+            time.sleep(3)
+            if "okta" in driver.current_url.lower():
+                self._click_okta_login(driver)
 
-        print("[Auto-Recovery] Waiting for page to stabilize...")
-        time.sleep(3)
-
-        # Check if we landed on an Okta login page
-        current_url = ""
         try:
-            current_url = self.driver.current_url
-        except Exception:
-            pass
+            WebDriverWait(driver, 20 if persistent else 30).until(self._on_degree_plans)
+        except TimeoutException as exc:
+            raise RuntimeError(i18n.tr("err_browser_sign_in_required")) from exc
 
-        if "okta" in current_url.lower():
-            print("[Auto-Recovery] Detected Okta login page. Attempting auto-click...")
-            self._click_okta_login()
-            print("[Auto-Recovery] Waiting for post-login redirect...")
-        else:
-            print("[Auto-Recovery] Not on Okta page, checking if already logged in...")
+        credentials = self._extract_credentials(driver)
+        if "error" in credentials:
+            raise RuntimeError(credentials["error"])
+        return credentials
 
-        # Wait until we reach the DegreePlans page (or timeout)
-        try:
-            WebDriverWait(self.driver, 30).until(
-                lambda d: "DegreePlans" in (d.current_url or "")
-            )
-        except TimeoutException:
-            raise RuntimeError(
-                "Silent re-login timed out: did not reach DegreePlans page. "
-                "A manual re-login may be required."
-            )
-
-        print("[Auto-Recovery] Reached DegreePlans. Extracting credentials...")
-        creds = self.extract_credentials()
-
-        if "error" in creds:
-            raise RuntimeError(
-                f"Credential extraction failed during recovery: {creds['error']}"
-            )
-
-        print(f"[Auto-Recovery] Credentials extracted. Student ID: {creds.get('student_id')}")
-        return creds
-
-    def _click_okta_login(self):
+    def _click_okta_login(self, driver):
         """
         Click the Okta sign-in button using multiple fallback selectors.
         Okta's login page may vary — we try several common patterns.
@@ -311,7 +289,7 @@ class KeanAuthManager:
 
         for by, selector in selectors:
             try:
-                btn = WebDriverWait(self.driver, 5).until(
+                btn = WebDriverWait(driver, 5).until(
                     EC.element_to_be_clickable((by, selector))
                 )
                 if btn and btn.is_displayed():
@@ -325,11 +303,43 @@ class KeanAuthManager:
             "Could not locate Okta login button. The page layout may have changed."
         )
 
+    def finish_login(self, keep_open=False):
+        with self._browser_operation:
+            if self._profile_lease is not None:
+                try:
+                    self._profiles.remember_browser(self._browser_name)
+                except (OSError, RuntimeError) as exc:
+                    print(f"[WARN] Could not remember the browser profile: {exc}")
+            self._signing_in = False
+            if not keep_open:
+                self.close_browser()
+
+    def clear_browser_profiles(self):
+        with self._browser_operation:
+            self.close_persistent_browser()
+            self._profiles.clear()
+
+    @property
+    def uses_persistent_browser(self):
+        return self._profile_lease is not None
+
+    def close_persistent_browser(self):
+        if self.uses_persistent_browser:
+            self.close_browser()
+
     def close_browser(self):
-        if self.driver:
-            try:
-                self.driver.quit()
-            except Exception:
-                pass
-            finally:
-                self.driver = None
+        with self._browser_operation:
+            self._quit_browser(self.driver, self._profile_lease)
+            self.driver = self._profile_lease = self._browser_name = None
+            self._signing_in = False
+
+    @staticmethod
+    def _quit_browser(driver, lease):
+        try:
+            if driver is not None:
+                driver.quit()
+        except Exception:
+            pass
+        finally:
+            if lease is not None:
+                lease.close()
