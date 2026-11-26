@@ -3,148 +3,237 @@ from datetime import datetime
 from math import ceil, isfinite
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QGridLayout, QHBoxLayout, QWidget
-from qfluentwidgets import CaptionLabel, StrongBodyLabel, VerticalSeparator
+from PyQt6.QtGui import QColor
+from PyQt6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QVBoxLayout
+from qfluentwidgets import (
+    CaptionLabel, FluentIcon as FIF, IconWidget, ProgressBar, SimpleCardWidget,
+    StrongBodyLabel, VerticalSeparator,
+)
 
 from i18n import i18n
 from registration_state import SessionStatus
 
 
+MUTED = ("#595959", "#adadad")
+SUCCESS = ("#17643c", "#a0d7af")
+WARNING = ("#7b4c0d", "#efca83")
+ERROR = ("#a22732", "#f4a5af")
+INFORMATION = ("#225f79", "#9ac9db")
+
 SESSION_STYLES = {
-    None: ("session_unverified", "#8a8a8a"),
-    SessionStatus.VALID: ("session_alive", "#6ccb5f"),
-    SessionStatus.EXPIRED: ("session_expired", "#ff99a4"),
-    SessionStatus.UNKNOWN: ("session_unknown", "#fce100"),
+    None: ("session_unverified", FIF.FINGERPRINT, MUTED),
+    SessionStatus.VALID: ("session_alive", FIF.COMPLETED, SUCCESS),
+    SessionStatus.EXPIRED: ("session_expired", FIF.CLOSE, ERROR),
+    SessionStatus.UNKNOWN: ("session_unknown", FIF.QUESTION, WARNING),
 }
 
-OUTCOME_LABELS = {
-    "valid": "session_result_valid",
-    "expired": "session_result_expired",
-    "unknown": "session_result_unknown",
-    "expired_deferred": "session_result_deferred",
-    "manual_required": "session_result_failed",
-    "recovered": "session_result_recovered",
-    "superseded": "session_result_discarded",
+OUTCOME_STYLES = {
+    "valid": ("session_result_valid", SUCCESS),
+    "expired": ("session_result_expired", ERROR),
+    "unknown": ("session_result_unknown", WARNING),
+    "expired_deferred": ("session_result_deferred", WARNING),
+    "manual_required": ("session_result_failed", ERROR),
+    "completed": ("session_result_completed", INFORMATION),
+    "recovered": ("session_result_recovered", SUCCESS),
+    "superseded": ("session_result_discarded", MUTED),
 }
 
+AUTOMATIC_LABELS = {
+    "disabled": "session_auto_off",
+    "waiting": "session_auto_waiting",
+    "checking": "session_auto_paused",
+    "busy": "session_auto_paused",
+    "running": "session_auto_running",
+    "recovering": "session_auto_recovering",
+    "cooldown": "keepalive_state_cooldown",
+    "manual_required": "session_auto_sign_in",
+}
 
-class SessionSummary(QWidget):
+COUNTDOWN_LABELS = {
+    "scheduled": "session_next_countdown",
+    "retry": "session_retry_countdown",
+    "cooldown": "session_cooldown_countdown",
+}
+
+AGE_UNITS = (("days", 86400, "99+"), ("hours", 3600, 23),
+             ("minutes", 60, 59), ("seconds", 1, 59))
+
+
+class SessionSummary(SimpleCardWidget):
     def __init__(self):
         super().__init__()
-        layout = QGridLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setHorizontalSpacing(12)
-        layout.setVerticalSpacing(0)
+        self.setBorderRadius(8)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 5, 10, 5)
+        layout.setSpacing(8)
         center = Qt.AlignmentFlag.AlignVCenter
 
-        status_row = QHBoxLayout()
-        status_row.setSpacing(6)
-        self.status_dot = QWidget()
-        self.status_dot.setFixedSize(8, 8)
+        self.status_tile = QFrame()
+        self.status_tile.setFixedSize(28, 28)
+        tile_layout = QHBoxLayout(self.status_tile)
+        tile_layout.setContentsMargins(0, 0, 0, 0)
+        self.status_icon = IconWidget()
+        self.status_icon.setFixedSize(16, 16)
+        tile_layout.addWidget(self.status_icon, 0, Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.status_tile, 0, center)
+
+        live = QVBoxLayout()
+        live.setSpacing(0)
         self.status_label = StrongBodyLabel()
-        status_font = self.status_label.font()
-        status_font.setPixelSize(13)
-        self.status_label.setFont(status_font)
-        status_row.addWidget(self.status_dot, 0, center)
-        status_row.addWidget(self.status_label, 1)
-        layout.addLayout(status_row, 0, 0)
         self.automatic_label = self._caption()
         self.automatic_label.setAccessibleDescription(i18n.tr("session_keepalive"))
-        layout.addWidget(self.automatic_label, 1, 0)
+        self._reserve_width(self.status_label, [i18n.tr(key) for key, _, _ in SESSION_STYLES.values()])
+        captions = [i18n.tr(key) for key in (*AUTOMATIC_LABELS.values(), "session_auto_on")]
+        captions.extend(i18n.tr(key, "88:88:88") for key in COUNTDOWN_LABELS.values())
+        self._reserve_width(self.automatic_label, captions)
+        live.addWidget(self.status_label, 0, Qt.AlignmentFlag.AlignLeft)
+        live.addWidget(self.automatic_label, 0, Qt.AlignmentFlag.AlignLeft)
+        live.addSpacing(3)
+        self.countdown_progress = ProgressBar(useAni=False)
+        self.countdown_progress.setFixedHeight(2)
+        self.countdown_progress.setRange(0, 1000)
+        self.countdown_progress.setAccessibleName(i18n.tr("session_next_keepalive"))
+        self.countdown_progress.setCustomBarColor(*INFORMATION)
+        self.countdown_progress.setCustomBackgroundColor(QColor(0, 0, 0, 40), QColor(255, 255, 255, 45))
+        policy = self.countdown_progress.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self.countdown_progress.setSizePolicy(policy)
+        self.countdown_progress.hide()
+        live.addWidget(self.countdown_progress)
+        layout.addLayout(live)
 
         divider = VerticalSeparator()
-        divider.setFixedHeight(24)
-        layout.addWidget(divider, 0, 1, 2, 1, center)
+        divider.setFixedHeight(28)
+        layout.addWidget(divider, 0, center)
 
-        self.last_check_label = CaptionLabel()
-        self.last_check_label.setMinimumWidth(104)
-        self.last_check_label.setAccessibleDescription(i18n.tr("session_last_check"))
-        self.last_keepalive_label = CaptionLabel()
-        self.last_keepalive_label.setMinimumWidth(112)
-        self.last_keepalive_label.setAccessibleDescription(i18n.tr("session_last_keepalive"))
-        layout.addWidget(self._caption("session_last_check"), 0, 2, center)
-        layout.addWidget(self.last_check_label, 1, 2)
-        layout.addWidget(self._caption("session_last_keepalive"), 0, 3, center)
-        layout.addWidget(self.last_keepalive_label, 1, 3)
+        activity = QGridLayout()
+        activity.setHorizontalSpacing(8)
+        activity.setVerticalSpacing(3)
+        activity.setAlignment(center)
+        self.last_check_label, self.last_check_age = self._add_record(activity, 0, "session_last_check")
+        self.last_keepalive_label, self.last_keepalive_age = self._add_record(activity, 1, "session_last_keepalive")
+        layout.addLayout(activity)
 
     @staticmethod
-    def _caption(key=None):
-        label = CaptionLabel(i18n.tr(key) if key else "")
-        label.setTextColor("#616161", "#a8a8a8")
+    def _caption(text=""):
+        label = CaptionLabel(text)
+        label.setTextColor(*MUTED)
         return label
+
+    @staticmethod
+    def _reserve_width(label, texts):
+        # Size to the longest translated value so status updates keep the same geometry.
+        metrics = label.fontMetrics()
+        label.setFixedWidth(max(metrics.horizontalAdvance(text) for text in texts) + 1)
+
+    def _add_record(self, layout, row, title):
+        caption = self._caption(i18n.tr(title))
+        outcome = StrongBodyLabel()
+        outcome.pixelFontSize = 12
+        outcome.setAccessibleDescription(i18n.tr(title))
+        self._reserve_width(outcome, [i18n.tr(key) for key, _ in OUTCOME_STYLES.values()])
+        age = self._caption()
+        age.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        age.setAccessibleDescription(i18n.tr(title))
+        ages = [i18n.tr("session_time_just_now")]
+        ages.extend(i18n.tr(f"session_time_{unit}_ago", sample) for unit, _, sample in AGE_UNITS)
+        self._reserve_width(age, ages)
+        layout.addWidget(caption, row, 0)
+        layout.addWidget(outcome, row, 1)
+        layout.addWidget(age, row, 2)
+        return outcome, age
 
     def update_status(self, enabled, minutes, snapshot):
         status = snapshot.session.status if snapshot else None
-        key, color = SESSION_STYLES[status]
+        key, icon, colors = SESSION_STYLES[status]
         text = i18n.tr(key)
         if self.status_label.text() != text:
             self.status_label.setText(text)
-            self.status_dot.setStyleSheet(f"background-color: {color}; border-radius: 4px;")
+            self.status_icon.setIcon(icon.colored(*colors))
+            tint = QColor(colors[1])
+            tint.setAlpha(35)
+            self.status_tile.setStyleSheet(
+                f"QFrame {{ background-color: {tint.name(QColor.NameFormat.HexArgb)}; border-radius: 7px; }}"
+            )
 
         now = datetime.now().astimezone()
         self._update_automatic(enabled, minutes, snapshot, now)
-        self._update_history(self.last_check_label, snapshot.last_check if snapshot else None,
+        self._update_history(self.last_check_label, self.last_check_age, snapshot.last_check if snapshot else None,
                              "session_last_check", now)
-        self._update_history(self.last_keepalive_label, snapshot.last_keepalive if snapshot else None,
-                             "session_last_keepalive", now)
+        self._update_history(self.last_keepalive_label, self.last_keepalive_age,
+                             snapshot.last_keepalive if snapshot else None, "session_last_keepalive", now)
 
     def _update_automatic(self, enabled, minutes, snapshot, now):
         state = snapshot.state if snapshot else ("waiting" if enabled else "disabled")
+        if state == "running" and snapshot.recovering:
+            state = "recovering"
         automatic_on = state != "disabled"
         setting = i18n.tr("settings_keepalive_on" if automatic_on else "keepalive_state_disabled")
-        text = i18n.tr("session_auto_on" if automatic_on else "session_auto_off")
+        text = i18n.tr(AUTOMATIC_LABELS.get(state, "session_auto_on"))
         tooltip = [f"{i18n.tr('session_keepalive')} · {setting}"]
         if automatic_on:
             tooltip.append(f"{i18n.tr('session_interval')} · {i18n.tr('session_minutes', minutes)}")
 
         deadline = snapshot.next_due if snapshot else None
-        if deadline is not None and isfinite(deadline):
+        counting_down = deadline is not None and isfinite(deadline)
+        self.countdown_progress.setVisible(counting_down)
+        if counting_down:
             remaining = max(0, deadline - time.monotonic())
-            hours, seconds = divmod(ceil(remaining), 3600)
-            minutes, seconds = divmod(seconds, 60)
-            clock = f"{minutes:02d}:{seconds:02d}"
-            if hours >= 24:
-                days = hours // 24
-                clock = i18n.tr("session_countdown_days", days if days <= 99 else "99+")
-            elif hours:
-                clock = f"{hours}:{clock}"
+            clock = self._countdown_text(remaining)
+            text = i18n.tr(COUNTDOWN_LABELS.get(state, "session_next_countdown"), clock)
             if state == "cooldown":
-                text = i18n.tr("session_cooldown_countdown", clock)
                 tooltip.append(i18n.tr("keepalive_state_cooldown"))
-            else:
-                key = "session_retry_countdown" if state == "retry" else "session_next_countdown"
-                text = f"{text} · {i18n.tr(key, clock)}"
             try:
                 due = datetime.fromtimestamp(now.timestamp() + remaining).astimezone()
                 tooltip.append(f"{i18n.tr('session_next_keepalive')} · {due:%Y-%m-%d %H:%M:%S %z}")
             except (ValueError, OverflowError, OSError):
                 pass
-        elif automatic_on:
-            detail_key = {
-                "waiting": "keepalive_state_waiting",
-                "checking": "session_auto_paused",
-                "busy": "session_auto_paused",
-                "running": "session_recovering" if snapshot and snapshot.recovering else "session_auto_running",
-                "manual_required": "keepalive_state_manual_required",
-            }.get(state)
-            if detail_key:
-                text = f"{text} · {i18n.tr(detail_key)}"
+            start = snapshot.scheduled_from
+            duration = deadline - start if start is not None else 0
+            elapsed = 1 - min(1, remaining / duration) if duration > 0 else 0
+            self.countdown_progress.setValue(round(elapsed * self.countdown_progress.maximum()))
 
         self.automatic_label.setText(text)
-        self.automatic_label.setToolTip("\n".join(tooltip))
+        details = "\n".join(tooltip)
+        self.automatic_label.setToolTip(details)
+        self.countdown_progress.setToolTip(details)
 
     @staticmethod
-    def _update_history(label, result, title, now):
-        if result is None:
-            label.setText("—")
-            label.setToolTip("")
-            return
+    def _countdown_text(remaining):
+        hours, seconds = divmod(ceil(remaining), 3600)
+        minutes, seconds = divmod(seconds, 60)
+        if hours >= 24:
+            days = hours // 24
+            return i18n.tr("session_countdown_days", days if days <= 99 else "99+")
+        clock = f"{minutes:02d}:{seconds:02d}"
+        return f"{hours}:{clock}" if hours else clock
 
-        key = OUTCOME_LABELS[result.outcome]
-        if title == "session_last_keepalive" and result.outcome == "valid":
-            key = "session_result_completed"
-        outcome = i18n.tr(key)
-        when = datetime.fromtimestamp(result.completed_at).astimezone()
-        timestamp = when.strftime("%H:%M:%S" if when.date() == now.date() else "%m-%d %H:%M")
-        label.setText(f"{outcome} · {timestamp}")
-        label.setToolTip(f"{i18n.tr(title)} · {outcome}\n{when:%Y-%m-%d %H:%M:%S %z}")
+    @staticmethod
+    def _relative_time(seconds):
+        if seconds < 5:
+            return i18n.tr("session_time_just_now")
+        for unit, duration, _ in AGE_UNITS:
+            if seconds >= duration:
+                amount = int(seconds // duration)
+                return i18n.tr(f"session_time_{unit}_ago", amount if amount <= 99 else "99+")
+
+    @staticmethod
+    def _update_history(label, age, result, title, now):
+        if result is None:
+            outcome, colors, relative, tooltip = "—", MUTED, "", ""
+        else:
+            outcome_key = result.outcome
+            if title == "session_last_keepalive" and outcome_key == "valid":
+                outcome_key = "completed"
+            key, colors = OUTCOME_STYLES[outcome_key]
+            outcome = i18n.tr(key)
+            when = datetime.fromtimestamp(result.completed_at).astimezone()
+            relative = SessionSummary._relative_time(now.timestamp() - result.completed_at)
+            tooltip = f"{i18n.tr(title)} · {outcome}\n{when:%Y-%m-%d %H:%M:%S %z}"
+
+        if label.text() != outcome:
+            label.setText(outcome)
+            label.setTextColor(*colors)
+        age.setText(relative)
+        label.setToolTip(tooltip)
+        age.setToolTip(tooltip)

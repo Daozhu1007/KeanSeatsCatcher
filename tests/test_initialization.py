@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta
 from unittest.mock import Mock
 
 import pytest
@@ -8,6 +9,7 @@ from PyQt6.QtTest import QTest
 import cloud_cli
 import core_auth
 import ui_main
+import ui_session
 from registration_reader import DegreePlanRegistrationReader
 from test_registration import client, response, snapshot, S
 
@@ -80,6 +82,14 @@ def test_dashboard_session_summary_and_persisted_keepalive_preferences(tmp_path,
     monkeypatch.setattr(ui_main.InfoBar, "success", Mock())
     monkeypatch.setattr(ui_main.InfoBar, "warning", Mock())
 
+    clock = [datetime.now().astimezone()]
+
+    class DisplayTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0]
+
+    monkeypatch.setattr(ui_session, "datetime", DisplayTime)
     window = ui_main.KeanSeatsCatcherApp()
     monitor, auth, settings = window.monitor_interface, window.auth_interface, window.settings_interface
     summary = monitor.session_summary
@@ -99,7 +109,8 @@ def test_dashboard_session_summary_and_persisted_keepalive_preferences(tmp_path,
         tr = ui_main.i18n.tr
         assert summary.isVisible()
         assert summary.status_label.text() == tr("session_unverified")
-        assert summary.automatic_label.text() == f"{tr('session_auto_on')} · {tr('keepalive_state_waiting')}"
+        assert summary.automatic_label.text() == tr("session_auto_waiting")
+        assert not summary.countdown_progress.isVisible()
 
         auth.on_credentials_extracted(CREDENTIALS)
         keeper = window.session_keepalive
@@ -107,6 +118,7 @@ def test_dashboard_session_summary_and_persisted_keepalive_preferences(tmp_path,
         assert monitor.btn_ping.isEnabled() and monitor.btn_keepalive.isEnabled()
         assert summary.last_check_label.text() == summary.last_keepalive_label.text() == "—"
         assert tr("session_next_keepalive") in summary.automatic_label.toolTip()
+        assert summary.countdown_progress.isVisible()
         send.assert_not_called()
 
         settings.keepalive_interval.setCurrentIndex(2)
@@ -114,6 +126,7 @@ def test_dashboard_session_summary_and_persisted_keepalive_preferences(tmp_path,
         settings.keepalive_switch.setChecked(False)
         assert keeper.snapshot().next_due is None
         assert summary.automatic_label.text() == tr("session_auto_off")
+        assert not summary.countdown_progress.isVisible()
 
         monitor.btn_ping.click()
         for _ in range(150):
@@ -123,7 +136,9 @@ def test_dashboard_session_summary_and_persisted_keepalive_preferences(tmp_path,
         assert summary.status_label.text() == tr("session_expired")
         last_check = summary.last_check_label.text()
         last_check_tooltip = summary.last_check_label.toolTip()
-        assert last_check.startswith(f"{tr('session_result_expired')} · ") and last_check_tooltip
+        assert last_check == tr("session_result_expired")
+        assert summary.last_check_age.text() == tr("session_time_just_now")
+        assert summary.last_check_age.toolTip() == last_check_tooltip
         assert summary.last_keepalive_label.text() == "—"
         send.assert_called_once()
 
@@ -132,14 +147,28 @@ def test_dashboard_session_summary_and_persisted_keepalive_preferences(tmp_path,
             if summary.last_keepalive_label.text() != "—":
                 break
             QTest.qWait(10)
-        assert summary.last_keepalive_label.text().startswith(f"{tr('session_result_completed')} · ")
+        assert summary.last_keepalive_label.text() == tr("session_result_completed")
+        assert summary.last_keepalive_age.text() == tr("session_time_just_now")
         assert summary.last_keepalive_label.toolTip()
         assert summary.last_check_label.text() == last_check
         assert summary.last_check_label.toolTip() == last_check_tooltip
         assert summary.status_label.text() == tr("session_alive")
         assert summary.automatic_label.text() == tr("session_auto_off")
         assert send.call_count == 2
+
+        completed = datetime.fromtimestamp(keeper.snapshot().last_check.completed_at).astimezone()
+        assert last_check_tooltip.endswith(completed.strftime("%Y-%m-%d %H:%M:%S %z"))
+        watched_widgets = (summary, summary.last_check_age, summary.last_keepalive_age, monitor.log_box)
+        original_geometry = [widget.geometry() for widget in watched_widgets]
+        monitor._session_timer.start(10)
+        for seconds, unit, amount in ((35.5, "seconds", 35), (125.5, "minutes", 2)):
+            clock[0] = completed + timedelta(seconds=seconds)
+            QTest.qWait(50)
+            assert summary.last_check_age.text() == tr(f"session_time_{unit}_ago", amount)
+            assert summary.last_check_age.toolTip() == last_check_tooltip
+            assert [widget.geometry() for widget in watched_widgets] == original_geometry
     finally:
+        monitor._session_timer.stop()
         window.close()
         if window.session_keepalive is not None:
             window.session_keepalive._thread.join(3)

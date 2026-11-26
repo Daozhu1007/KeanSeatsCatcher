@@ -271,7 +271,7 @@ class MonitorInterface(QWidget):
         self.setObjectName("MonitorInterface")
         self.layout = QVBoxLayout(self)
 
-        self.layout.setContentsMargins(24, 32, 24, 24)
+        self.layout.setContentsMargins(24, 24, 24, 24)
         self.layout.setSpacing(16)
 
         self.api_engine = None
@@ -286,12 +286,16 @@ class MonitorInterface(QWidget):
 
         title = SubtitleLabel(i18n.tr("monitor_title"))
         title.setStyleSheet("font-size: 26px; font-weight: bold;")
+        # Give the summary room in the header while aligning the form with Auto-Catch.
+        title.setContentsMargins(0, 8, 0, 8)
+        header_and_form = QVBoxLayout()
+        header_and_form.setSpacing(8)
         title_row = QHBoxLayout()
-        title_row.setSpacing(16)
+        title_row.setSpacing(12)
         title_row.addWidget(title, 1)
         self.session_summary = SessionSummary()
         title_row.addWidget(self.session_summary, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.layout.addLayout(title_row)
+        header_and_form.addLayout(title_row)
 
         card = CardWidget()
         card_layout = QVBoxLayout(card)
@@ -350,7 +354,8 @@ class MonitorInterface(QWidget):
             btn_row.addWidget(button)
         card_layout.addLayout(btn_row)
 
-        self.layout.addWidget(card)
+        header_and_form.addWidget(card)
+        self.layout.addLayout(header_and_form)
 
         log_title = BodyLabel(i18n.tr("lbl_log"))
         log_title.setStyleSheet("color: #a0a0a0;")
