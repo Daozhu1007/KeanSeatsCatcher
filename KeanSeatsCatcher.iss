@@ -3,7 +3,9 @@
 ; ─────────────────────────────────────────────────────────────
 
 #define MyAppName       "KeanSeatsCatcher"
-#define MyAppVersion    "1.4.0"
+#define VersionFile     FileOpen(SourcePath + "VERSION")
+#define MyAppVersion    FileRead(VersionFile)
+#call FileClose(VersionFile)
 #define MyAppPublisher  "Limitime"
 #define MyAppURL        "https://github.com/Daozhu1007/KeanSeatsCatcher"
 #define MyAppExeName    "KeanSeatsCatcher.exe"
@@ -18,6 +20,12 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
+VersionInfoVersion={#MyAppVersion}
+VersionInfoTextVersion={#MyAppVersion}
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription={#MyAppName} Setup
+VersionInfoProductName={#MyAppName}
+VersionInfoProductTextVersion={#MyAppVersion}
 
 ; ── Paths ───────────────────────────────────────────────────
 DefaultDirName={autopf}\{#MyAppName}
@@ -36,12 +44,14 @@ SolidCompression=yes
 LZMAUseSeparateProcess=yes
 
 ; ── Requirements ────────────────────────────────────────────
+SetupArchitecture=x64
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-MinVersion=10.0.10240
+MinVersion=10.0.17763
 
 ; ── Installer Behaviour ─────────────────────────────────────
 PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=commandline
 DirExistsWarning=auto
 DisableProgramGroupPage=no
 LicenseFile=.\DISCLAIMER.txt

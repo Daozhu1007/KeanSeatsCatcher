@@ -12,27 +12,20 @@ services:
       - ./logs:/app/logs
 
     command:
-      # --- Required ---
       - --sections
-      - 12345,67890                 # ← your target section IDs
+      - 12345,67890                 # Replace with your Section IDs.
       - --interval
       - "15"                        # polling interval in seconds
       - --load-session
-      - session.json                # exported session from Phase 1
+      - session.json
 
-      # --- Weapon 1: Standard Auto-Catch ---
-      # The flags above are all you need. KSC polls every N seconds
-      # and fires an Add request the instant a seat opens.
-
-      # --- Weapon 2: Drop-and-Add (credit-cap swap) ---
-      # Uncomment when you're at the credit limit:
+      # Optional drop alongside an add. Check both sections after a swap.
       # - --drop-section
-      # - 26667                      # course to sacrifice
+      # - 26667
 
-      # --- Weapon 3: Waitlist Fallback ---
+      # Optional waitlist fallback for a confirmed closed section.
       # - --waitlist
 
-      # --- Weapon 4: Webhook Notification ---
-      # Discord / Slack / ntfy:
+      # Optional JSON webhook after all targets are confirmed.
       # - --webhook
-      # - https://discord.com/api/webhooks/xxx/yyy
+      # - https://example.com/ksc-webhook

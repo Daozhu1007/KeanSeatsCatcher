@@ -7,6 +7,7 @@ resource_dir = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirnam
 import time
 import threading
 import datetime
+from pathlib import Path
 from PyQt6.QtGui import QPixmap, QIcon, QIntValidator, QDesktopServices, QTextCursor
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal, QUrl, QObject
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
@@ -33,6 +34,7 @@ from ui_session import create_session_header
 from ui_settings import SettingsInterface
 
 APP_USER_MODEL_ID = "wku.mingtai.keanseatscatcher.v2"
+APP_VERSION = (Path(resource_dir) / "VERSION").read_text(encoding="ascii").strip()
 
 
 class BrandingWidget(QWidget):
@@ -794,7 +796,7 @@ class AboutInterface(ScrollArea):
         info_layout.setSpacing(5)
         name_lbl = SubtitleLabel("KeanSeatsCatcher")
         name_lbl.setStyleSheet("font-size: 22px; font-weight: bold;")
-        ver_lbl = BodyLabel("Version 1.4.0")
+        ver_lbl = BodyLabel(f"Version {APP_VERSION}")
         ver_lbl.setStyleSheet("color: #a0a0a0;")
         info_layout.addWidget(name_lbl)
         info_layout.addWidget(ver_lbl)
@@ -1048,6 +1050,7 @@ if __name__ == '__main__':
         pass
 
     app = QApplication(sys.argv)
+    app.setApplicationVersion(APP_VERSION)
     app.setWindowIcon(QIcon(os.path.join(resource_dir, "assets", "logo.ico")))
     migration_errors = _migrate_user_data()
     window = KeanSeatsCatcherApp()

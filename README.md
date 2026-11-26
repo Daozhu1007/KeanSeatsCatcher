@@ -1,319 +1,187 @@
-<p align="center">
-  <img src="assets/logo.png" width="180" alt="KeanSeatsCatcher Logo">
-</p>
-
+<p align="center"><img src="assets/logo.png" width="128" alt="KeanSeatsCatcher logo"></p>
 <h1 align="center">KeanSeatsCatcher</h1>
 
-<p align="center">
-  <em>Dual-engine course availability monitor for Ellucian Banner 9 —<br>a GUI desktop app and a headless CLI daemon.</em>
-</p>
+KeanSeatsCatcher is Limitime's course registration tool for KeanWISE Self-Service.
+Look up sections, schedule a registration attempt, or watch for an opening.
+The Windows app has an English and a Simplified Chinese interface. Cloud Phantom
+is the command-line version of Auto-Catch.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue" alt="Platform">
-  <img src="https://img.shields.io/badge/python-3.10+-blue" alt="Python Version">
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-  <a href="https://github.com/Daozhu1007/KeanSeatsCatcher"><img src="https://img.shields.io/github/stars/Daozhu1007/KeanSeatsCatcher?style=flat" alt="Stars"></a>
-  <a href="https://space.bilibili.com/477852567"><img src="https://img.shields.io/badge/Bilibili-Limitime-00A1D6?logo=bilibili" alt="Bilibili"></a>
-</p>
+<p align="center"><img src="docs/screenshots/v1.4.0-dashboard.png" width="900" alt="KeanSeatsCatcher v1.4.0 Dashboard with scheduling controls and the session status summary"></p>
 
-<p align="center">
-  <img src="assets/screenshot_v1.3.png" width="800" alt="KeanSeatsCatcher GUI Screenshot">
-</p>
+## Download
 
----
+Get the Windows x64 build from the [latest release](../../releases/latest). Both
+downloads include Python and Qt and require Windows 10 version 1809 or later.
+Sign-in on Windows uses Microsoft Edge or Google Chrome.
 
-## Disclaimer
+| Download | What to run |
+| --- | --- |
+| Portable | Run `KeanSeatsCatcher_v1.4.0_Portable.exe` directly. |
+| Setup | Run `KeanSeatsCatcher_v1.4.0_Setup.exe` for a Start menu shortcut, optional desktop shortcut, and uninstaller. |
 
-This software is an **external auxiliary toolkit for personal, non-commercial use**. It interacts exclusively with the standard public API of Ellucian Banner 9 using your own authenticated session — it does not exploit vulnerabilities or bypass authorization.
+Both builds use the same [application data folder](#application-data).
 
-However:
+## Using the desktop app
 
-- Automated interaction with your institution's registration system may violate its acceptable-use policy. You are responsible for understanding those rules.
-- Excessive request rates can trigger rate-limiting or account suspension.
-- No warranty. Use at your own risk.
+1. Open **Authentication** and click **Launch Browser and Sign In**. Sign in to
+   KeanWISE in the browser, including any Okta prompts. Once **Degree Plans**
+   opens, return to KSC and click **Login Complete, Extract Credentials**.
+2. Enter the numeric **Section IDs** from KeanWISE, separated by commas. Use
+   **Section Lookup** to check the course, term, credits, seats, waitlist and
+   your registration status before starting a task.
+3. Choose **Dashboard** or **Auto-Catch**. Only one registration task runs at
+   a time.
 
----
+| Page | What it does |
+| --- | --- |
+| **Dashboard** | Submits the first registration request at **Scheduled Time** and checks the outcome. Leave the time blank to start immediately. The time is interpreted as today's local time in 24-hour format. A past or invalid time also starts immediately. The interval controls subsequent attempts. |
+| **Auto-Catch** | Checks availability at the chosen interval and submits for eligible sections as it finds them. **Drop Section ID** is optional and requests a drop alongside the add. |
+| **My Catches** | Shows past registrations that KSC submitted and then verified. Select a record to see the request, response and timing, filter by account, or delete the local record. KeanWISE shows your current schedule. |
 
-## Dual-Engine Architecture
+**Waitlist Fallback** can request a waitlist spot after a section-specific
+Closed rejection and a schedule read confirming the target is still unregistered.
+Check both sections in KeanWISE after a swap because the server can apply only
+part of the request.
 
-In v1.3.1, Authentication returns to browser sign-in and credential extraction.
-Enter Section IDs in Dashboard or Auto-Catch. Dashboard sends its first Add at
-the configured time, and Auto-Catch submits each eligible opening as it finds it.
-KeanWISE account records and Section details provide the term for each Section.
-KSC verifies each result, skips confirmed registrations and waitlists, and
-checks availability again before Auto-Catch retries an uncertain submission.
-Use `--verify-only` with the CLI to read registration states.
-See [verification behavior, evidence and remaining limits](docs/Registration-Verification.md).
+<details>
+<summary>My Catches with example records</summary>
 
-KSC ships with two independent engines sharing the same API core.
+<img src="docs/screenshots/v1.4.0-my-catches.png" width="900" alt="KeanSeatsCatcher v1.4.0 My Catches with two example records and the selected record's details">
 
-### 1. GUI Desktop Mode (Windows)
+</details>
 
+### Sessions and browser profiles
+
+The **Session Status** summary on Dashboard and Auto-Catch shows the session,
+the keepalive countdown, and the latest check and keepalive outcomes.
+**Dashboard** has separate **Session Check** and **Keep Alive Now** buttons.
+A session check reports **Valid**, **Expired**, or **Unknown**. When an account
+needs to sign in again, use **Authentication**. You can refresh credentials
+for the same account while the Dashboard is still counting down.
+
+**Automatic Keepalive** is on by default at 10 minutes. In **Settings**, choose
+5, 10, or 15 minutes or turn it off. Recent authenticated traffic can postpone a
+check. Maintenance waits during active registration and observes server
+cooldowns. If it confirms expiry, KSC tries one verified recovery for the same
+account. Be ready to sign in again if Okta asks for a password or MFA.
+**Show Session Status** in Settings controls the summary on both pages.
+
+Enable **Use KSC browser profile** in **Authentication** if you want to reuse
+sign-in data. KSC uses separate Edge and Chrome profiles in its data folder.
+The browser's password manager handles any password you choose to save. With
+**Keep Browser Open** on, an open KSC profile browser can be reused until you
+close it or exit KSC. **Clear browser profile data** closes that browser and
+deletes cookies, site data and saved passwords in the dedicated profiles,
+including retained legacy profiles. The default is a temporary browser profile.
+
+<details>
+<summary>Authentication</summary>
+
+<img src="docs/screenshots/v1.4.0-authentication.png" width="900" alt="KeanSeatsCatcher v1.4.0 Authentication page with options to use and clear a KSC browser profile">
+
+</details>
+
+## Application data
+
+Open **Settings → Open Application Data Folder** to find the active folder.
+On Windows it defaults to `%LOCALAPPDATA%\KeanSeatsCatcher`. Moving or
+replacing Portable, switching between Portable and Setup, and uninstalling
+the app through Setup preserve this folder.
+
+| Path | Contents |
+| --- | --- |
+| `config.json` | Language, browser, keepalive and session display settings. |
+| `catches.sqlite3` | Verified catch history and its supporting request evidence. |
+| `logs/` | Registration events as JSON Lines. The CLI also writes `cloud_sniper.log`. |
+| `browser-profiles/` | Optional KSC-managed Edge and Chrome profiles. |
+
+For the first upgrade, close the old app and its KSC browser. If you used an
+older Portable build, run v1.4.0 once from the directory containing the old
+`config.json`. KSC imports that file when the new folder has no configuration.
+It also merges catch history from `~/.keanseatscatcher`, copies logs, and copies
+each missing browser profile as a unit. Existing settings and profiles take
+precedence. The old files stay on disk.
+
+Set `KSC_DATA_DIR` to use a separate data folder or `KSC_LOG_DIR` to redirect
+logs. The CLI defaults to `~/Library/Application Support/KeanSeatsCatcher` on
+macOS and `$XDG_DATA_HOME/KeanSeatsCatcher` or
+`~/.local/share/KeanSeatsCatcher` on Linux. Keep the data folder private.
+Registration evidence can still contain student IDs and course records after
+credential redaction. The CLI logs the webhook URL if one is configured.
+Browser profiles may contain active sessions and saved passwords.
+
+## Cloud Phantom
+
+The CLI in this repository can run Auto-Catch without the desktop app. On a
+machine with a browser and display, use Python 3.10 or later and export a
+session after signing in to KeanWISE.
+
+```sh
+python -m pip install -r requirements-cli.txt selenium
+python export_session.py --output session.json
 ```
-ui_main.py  →  PyQt6 + qfluentwidgets
+
+`session.json` contains live cookies, a request verification token and your
+student ID in plain JSON. Keep it private. On the machine running the CLI,
+install the CLI dependencies and use your exported file. Replace `12345,67890`
+with your section IDs.
+
+```sh
+python -m pip install -r requirements-cli.txt
+python cloud_cli.py --load-session session.json --sections 12345,67890 --verify-only
+python cloud_cli.py --load-session session.json --sections 12345,67890 --interval 15
 ```
 
-| Feature | Detail |
-|---|---|
-| **Dashboard** | One-shot scheduled attack or continuous monitoring with countdown timer |
-| **Auto-Catch** | Background polling loop — detects open seats and attacks instantly |
-| **Session Auto-Recovery** | Detects HTTP 401, login responses and explicit credential rejection. Workers try one verified recovery for the same account. |
-| **Memory Safety** | Log widget capped at 1 000 lines; minimum 1 s polling interval to prevent CPU thrashing |
-| **Recovery Counter** | Status bar shows `Polling (Round #1245) \| Recoveries: 3...` for situational awareness |
-| **Waitlist Fallback** | Requires a scoped Closed rejection and a verified record showing the Section is not registered |
-| **Session Status** | The Dashboard header shows the current session, automatic keepalive status and next run countdown. Last Session Check and Last Keep Alive show separate times and outcomes. Use **Session Check** to verify the session or **Keep Alive Now** to run maintenance while idle or waiting for a scheduled task. |
-| **Session Keepalive** | Settings can turn automatic keepalive off or set a 5, 10 or 15 minute interval. The default is on at 10 minutes. A transient connection failure gets one recheck after 60 seconds. Maintenance respects `Retry-After` and pauses during active registration tasks. Confirmed expiry during maintenance gets one verified Okta recovery attempt. |
-| **Section Lookup** | Read course details, term, credits, seat counts, waitlist availability and account registration status for one or more Section IDs. |
-| **Event Logs** | JSONL audit trail with requests, redacted responses, per-Section results and timings in the application data folder’s `logs` directory. |
-| **My Catches** | Confirmed catches with request details, account filtering and individual record deletion. History lives in `catches.sqlite3` in the application data folder. |
+Use `--verify-only` to read the schedule and exit. The last command starts a
+registration task. `--waitlist` enables the same fallback as
+the desktop app. `--webhook URL` sends a JSON object with `title` and `message`
+when all targets are confirmed. `--drop-section ID` is the CLI equivalent
+of **Drop Section ID**. With Selenium and a display, `--no-headless` lets you
+sign in from the CLI instead of loading an exported session.
 
-In **Authentication**, enable **Use KSC browser profile** to reuse a dedicated
-Edge or Chrome profile for sign-in and session recovery. Each browser has its
-own folder under `browser-profiles` in the application data folder. If the
-browser offers to save your password, that choice belongs to its password
-manager. A valid SSO session can sign in directly. Okta may still prompt for
-your password or MFA. After sign-in, use **Login Complete, Extract Credentials**
-as usual. Recovery accepts credentials for the active student account only.
+For Docker, put `session.json` next to `docker-compose.yml`, edit the section
+IDs in the service command, and run `docker compose up --build -d`. Use
+`docker compose logs -f` for output and `docker compose down` to stop.
+Compose mounts the session read-only and keeps data under the host's `./logs`
+directory. A worker using an exported session stops on confirmed expiry.
+Export a fresh session and start the task again when needed.
 
-Turn the option off to launch with a temporary profile. **Clear browser profile
-data** closes the KSC profile browser and removes cookies, site data and any
-passwords saved in the dedicated Edge and Chrome profiles, including any retained
-legacy KSC profiles in the default store.
-With **Keep Browser Open**, the dedicated browser stays open after extraction
-until KSC exits or you close the window.
+## How it works
 
-### 2. CLI Headless Mode (Linux Server · Cloud Phantom)
+The desktop app uses PyQt6 and QFluentWidgets. Its Dashboard and Auto-Catch
+workers use Qt threads. The CLI uses a Python thread and the same
+`requests`-based client. Selenium handles browser sign-in. Subsequent course
+and schedule requests use the signed-in account's session.
 
-```
-cloud_cli.py  →  pure threading.Thread + logging  (zero GUI dependency)
-```
+KSC uses the Ellucian Colleague data behind KeanWISE Self-Service. It resolves
+each section's term and uses the account's Degree Plans records to verify
+registration. A full section, a waitlist spot, a request acknowledgement, and
+a verified registration are distinct outcomes. Ambiguous writes stay
+**Unknown** while KSC checks the account records before deciding whether to
+retry. KeanWISE determines eligibility and the final outcome.
 
-Designed for 24/7 unattended operation on a $5 VPS.
+- [Registration verification and the evidence behind it](docs/Registration-Verification.md)
+- [KeanWISE session lifecycle study](docs/Session-Lifecycle-Study-v1.3.3.md)
+- [Kean Registrar's description of Self-Service](https://www.kean.edu/offices/registrars-office/registrar-resources-faculty-and-advisors)
 
-**Session Smuggling pipeline** — solves the "headless browser can't do 2FA" problem:
+## Run from source
 
-```
-[Windows desktop]                  [Linux server]
-export_session.py ──► session.json ──► cloud_cli.py --load-session session.json
-```
-
-1. Run `export_session.py` on your local Windows machine (visible browser, one-time SSO login).
-2. Copy the resulting `session.json` to your server.
-3. `cloud_cli.py` injects credentials directly into the API engine — **no browser required on the server**.
-
-**CLI features:**
-- `--sections` / `--interval` / `--waitlist` — same semantics as the GUI
-- `--load-session FILE` — skip browser auth, load from JSON
-- `--webhook URL` — POST `{"title":"KSC Auto-Catch","message":"..."}` on success (Slack / Discord / ntfy compatible)
-- `--no-headless` — show browser for initial login setup on a machine with a display
-- Graceful shutdown on `SIGINT` / `SIGTERM`
-- Dual logging: INFO to console, DEBUG to `cloud_sniper.log` in the application log folder
-
----
-
-## Quick Start
-
-### GUI (Windows)
-
-```bash
-git clone https://github.com/Daozhu1007/KeanSeatsCatcher.git
-cd KeanSeatsCatcher
-pip install -r requirements.txt
-python ui_main.py
-```
-
-Starting with v1.3.5, the Windows Portable build is a single `KeanSeatsCatcher.exe` that runs directly on Windows. The optional `KeanSeatsCatcher_v1.3.5_Setup.exe` installer adds Start Menu shortcuts and an uninstaller. See the [published releases](../../releases).
-
-#### Application data
-
-**Settings → Open Application Data Folder** opens the folder used by the current user. The same folder holds `config.json`, `catches.sqlite3`, `logs`, and `browser-profiles` for Portable and installed copies. You can move, rename, or replace the EXE after upgrading and keep using the same data.
-
-| Platform | Default folder |
-|---|---|
-| Windows | `%LOCALAPPDATA%\KeanSeatsCatcher` |
-| macOS | `~/Library/Application Support/KeanSeatsCatcher` |
-| Linux | `$XDG_DATA_HOME/KeanSeatsCatcher` or `~/.local/share/KeanSeatsCatcher` |
-
-For the first upgrade, close the old KSC app and its dedicated browser. Run the updated EXE once from the folder containing your old `config.json`. KSC imports it if the application data folder has no config. It also merges My Catches from `~/.keanseatscatcher`, keeps both files if log filenames collide, and copies each missing browser profile as a whole. Existing config, matching catch records and existing browser profiles take precedence. Legacy files remain available as backups.
-
-`KSC_DATA_DIR` selects an independent data folder, including any history and profiles already stored there. `KSC_LOG_DIR` overrides the log location. The CLI archives the old `cloud_sniper.log` from its working directory under `logs/legacy` in the default layout.
-
-#### Build the Windows release
-
-Run these commands with 64-bit Python on Windows from the repository root.
+On Windows, run these from the repository root with 64-bit Python 3.10 or
+later.
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm KeanSeatsCatcher.spec
+.\.venv\Scripts\python.exe ui_main.py
 ```
 
-Distribute `dist\KeanSeatsCatcher.exe` directly as the Portable release. To build the optional installer from the same EXE, compile `KeanSeatsCatcher.iss` with Inno Setup 6.
+See the [Windows build and source notes](docs/Windows-Build.md) for packaging.
 
-### CLI (Windows / Local Test)
+Use KSC with your own account and follow your institution's rules on
+registration and automated requests. The software comes without a warranty.
 
-```bash
-# Export session (one-time, visible browser)
-python export_session.py
+Original project code is [MIT-licensed](LICENSE). The Windows builds include
+GPL-licensed Qt bindings and widgets.
+See the [binary licensing and upstream sources](docs/Windows-Build.md#source-and-licenses).
 
-# Start polling with the exported session
-python cloud_cli.py --sections 12345,67890 --interval 15 --load-session session.json
-```
-
-### CLI (Linux Server / Headless Deploy)
-
-```bash
-# --- On local machine (one time) ---
-python export_session.py
-# → session.json
-
-# --- Copy to server ---
-scp session.json user@vps:/opt/ksc/
-
-# --- On server ---
-pip install -r requirements.txt
-python cloud_cli.py --sections 12345,67890 --interval 15 --waitlist \
-    --load-session session.json \
-    --webhook https://discord.com/api/webhooks/xxx/yyy
-```
-
-### Docker Deployment — Universal Cloud Phantom Guide
-
-> Docker turns KSC into a 24/7 autonomous seat-sniping daemon. Run it on a $5 VPS, a NAS in the closet, or Docker Desktop on the same Mac. Close your lid, kill your terminal, walk away — it keeps hunting.
-
-No browser. No display. No bloat. **Image size:** ~130 MB (`python:3.10-slim` + `requests`).
-
-#### Phase 1: Extract the Session Locally
-
-**This step always happens on a machine with a display.** SSO demands a browser; the container has none. Run this on your daily-driver laptop or desktop — Windows, macOS, or Linux:
-
-```bash
-python export_session.py
-# → session.json
-```
-
-Log in via the browser window. `session.json` captures your encrypted cookies and API token.
-
-> **Smart Browser Fallback.** `export_session.py` ships with an automatic fallback chain — **Edge → Chrome → Safari** (macOS: **Safari → Chrome → Edge**). The first available browser wins. No need to install anything.
-
-#### Phase 2: Configure the Arsenal
-
-Clone the repo on your target machine and copy in `session.json`:
-
-```bash
-git clone https://github.com/Daozhu1007/KeanSeatsCatcher.git
-cd KeanSeatsCatcher
-# scp session.json user@your-server:/opt/ksc/KeanSeatsCatcher/
-```
-
-You should have:
-
-```
-KeanSeatsCatcher/
-├── session.json            # your exported credentials
-├── docker-compose.yml      # container orchestration
-├── Dockerfile              # image definition
-└── ... (other source files)
-```
-
-Edit `docker-compose.yml` — replace the placeholder IDs and pick your scenario:
-
-```yaml
-services:
-  ksc:
-    build: .
-    container_name: ksc-auto-catch
-    restart: unless-stopped
-    volumes:
-      - ./session.json:/app/session.json:ro
-
-    command:
-      # --- Required ---
-      - --sections
-      - 26012,26686                 # ← your target section IDs
-      - --interval
-      - 15                          # polling interval in seconds
-      - --load-session
-      - session.json                # exported session from Phase 1
-
-      # --- Weapon 1: Standard Auto-Catch ---
-      # The flags above are all you need. KSC polls every N seconds
-      # and fires an Add request the instant a seat opens.
-
-      # --- Weapon 2: Drop-and-Add (credit-cap swap) ---
-      # Uncomment when you're at the credit limit:
-      # - --drop-section
-      # - 26667                      # course to sacrifice
-
-      # --- Weapon 3: Waitlist Fallback ---
-      # - --waitlist
-
-      # --- Weapon 4: Webhook Notification ---
-      # Discord / Slack / ntfy:
-      # - --webhook
-      # - https://discord.com/api/webhooks/xxx/yyy
-```
-
-**Scenario A — Standard Auto-Catch (room under credit cap)**
-
-Keep `--sections` and `--load-session` active. KSC polls every N seconds. The moment a seat flips from full to open, it fires an `Add` request. No other flags required.
-
-**Scenario B — Drop-and-Add (at the credit cap)**
-
-Uncomment `--drop-section` and supply the ID of an enrolled course you're willing to sacrifice. When a target opens, KSC drops the old section and adds the new one in a **single atomic API call** — no gap, no risk of losing both.
-
-| Optional Flag | Effect |
-|---|---|
-| `--waitlist` | Fallback to `Waitlist` if `Add` is rejected |
-| `--webhook <URL>` | POSTs `{"title":"KSC Auto-Catch","message":"..."}` on every successful action |
-| `--drop-section <ID>` | Synchronous swap: drop old, add new in one call |
-
-**Anti-spam guard:** Webhooks fire only on a **new** "full → open" transition. No duplicate spam across rounds.
-
-#### Phase 3: Launch & Monitor
-
-```bash
-cd KeanSeatsCatcher
-```
-
-| Command | What it does |
-|---|---|
-| `docker compose up -d` | Builds image, starts daemon in background (~30 s first run). Auto-restarts on crash or host reboot. |
-| `docker compose logs -f` | Tails live output. `Polling (Round #N)` = alive and hunting. A successful catch prints a banner. |
-| `docker compose down` | Graceful shutdown. |
-| `docker compose up -d --build` | Force-rebuild image before starting. Use after editing `docker-compose.yml`, replacing `session.json`, or pulling new code. |
-
----
-
-## Project Structure
-
-```
-KeanSeatsCatcher/
-├── ui_main.py              # GUI entry (PyQt6 shell)
-├── ui_autocatch.py         # Auto-Catch UI panel
-├── auto_catch_worker.py    # Background polling worker (QThread)
-├── core_api.py             # REST engine + session recovery detection
-├── core_auth.py            # Selenium SSO / headless auth
-├── i18n.py                 # Localization manager
-├── locales/                # en_US + zh_CN translation tables
-├── assets/                 # Icons, logo, screenshots
-│
-├── cloud_cli.py            # CLI entry point (Cloud Phantom)
-├── cloud_worker.py         # Headless polling worker (threading.Thread)
-├── export_session.py       # Session exporter (Windows → Linux)
-│
-├── Dockerfile              # Container image definition
-├── docker-compose.yml      # One-command container orchestration
-├── .dockerignore           # Exclude desktop cruft from build context
-├── requirements.txt        # Desktop dependencies (PyQt6, selenium, etc.)
-├── requirements-cli.txt    # CLI-only dependencies (requests only)
-│
-├── KeanSeatsCatcher.spec   # PyInstaller spec
-└── KeanSeatsCatcher.iss    # Inno Setup installer script
-```
-
----
-
-## License
-
-MIT. See `LICENSE`.
+Maintained by Limitime. [GitHub](https://github.com/Daozhu1007) · [Bilibili](https://space.bilibili.com/477852567)

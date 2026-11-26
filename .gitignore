@@ -74,6 +74,8 @@ session.json
 /config.json
 logs/
 registration-*.jsonl
+catches.sqlite3*
+browser-profiles/
 
 # PyBuilder
 .pybuilder/
