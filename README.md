@@ -64,12 +64,12 @@ ui_main.py  →  PyQt6 + qfluentwidgets
 | **Session Status** | The Dashboard header shows the current session, automatic keepalive status and next run countdown. Last Session Check and Last Keep Alive show separate times and outcomes. Use **Session Check** to verify the session or **Keep Alive Now** to run maintenance while idle or waiting for a scheduled task. |
 | **Session Keepalive** | Settings can turn automatic keepalive off or set a 5, 10 or 15 minute interval. The default is on at 10 minutes. A transient connection failure gets one recheck after 60 seconds. Maintenance respects `Retry-After` and pauses during active registration tasks. Confirmed expiry during maintenance gets one verified Okta recovery attempt. |
 | **Section Lookup** | Read course details, term, credits, seat counts, waitlist availability and account registration status for one or more Section IDs. |
-| **Event Logs** | JSONL audit trail with requests, redacted responses, per-Section results and timings in `~/.keanseatscatcher/logs` |
-| **My Catches** | Confirmed catches with request details, account filtering and individual record deletion. History lives in `~/.keanseatscatcher/catches.sqlite3` across Portable upgrades. |
+| **Event Logs** | JSONL audit trail with requests, redacted responses, per-Section results and timings in the application data folder’s `logs` directory. |
+| **My Catches** | Confirmed catches with request details, account filtering and individual record deletion. History lives in `catches.sqlite3` in the application data folder. |
 
 In **Authentication**, enable **Use KSC browser profile** to reuse a dedicated
 Edge or Chrome profile for sign-in and session recovery. Each browser has its
-own folder under `%USERPROFILE%\.keanseatscatcher\browser-profiles`. If the
+own folder under `browser-profiles` in the application data folder. If the
 browser offers to save your password, that choice belongs to its password
 manager. A valid SSO session can sign in directly. Okta may still prompt for
 your password or MFA. After sign-in, use **Login Complete, Extract Credentials**
@@ -77,7 +77,8 @@ as usual. Recovery accepts credentials for the active student account only.
 
 Turn the option off to launch with a temporary profile. **Clear browser profile
 data** closes the KSC profile browser and removes cookies, site data and any
-passwords saved in both dedicated profiles.
+passwords saved in the dedicated Edge and Chrome profiles, including any retained
+legacy KSC profiles in the default store.
 With **Keep Browser Open**, the dedicated browser stays open after extraction
 until KSC exits or you close the window.
 
@@ -106,7 +107,7 @@ export_session.py ──► session.json ──► cloud_cli.py --load-session s
 - `--webhook URL` — POST `{"title":"KSC Auto-Catch","message":"..."}` on success (Slack / Discord / ntfy compatible)
 - `--no-headless` — show browser for initial login setup on a machine with a display
 - Graceful shutdown on `SIGINT` / `SIGTERM`
-- Dual logging: INFO to console, DEBUG to `cloud_sniper.log`
+- Dual logging: INFO to console, DEBUG to `cloud_sniper.log` in the application log folder
 
 ---
 
@@ -123,7 +124,19 @@ python ui_main.py
 
 Starting with v1.3.5, the Windows Portable build is a single `KeanSeatsCatcher.exe` that runs directly on Windows. The optional `KeanSeatsCatcher_v1.3.5_Setup.exe` installer adds Start Menu shortcuts and an uninstaller. See the [published releases](../../releases).
 
-To upgrade a Portable copy, replace the EXE in its existing folder to keep any `config.json` stored alongside it. My Catches and event logs use `%USERPROFILE%\.keanseatscatcher\catches.sqlite3` and `%USERPROFILE%\.keanseatscatcher\logs\` by default.
+#### Application data
+
+**Settings → Open Application Data Folder** opens the folder used by the current user. The same folder holds `config.json`, `catches.sqlite3`, `logs`, and `browser-profiles` for Portable and installed copies. You can move, rename, or replace the EXE after upgrading and keep using the same data.
+
+| Platform | Default folder |
+|---|---|
+| Windows | `%LOCALAPPDATA%\KeanSeatsCatcher` |
+| macOS | `~/Library/Application Support/KeanSeatsCatcher` |
+| Linux | `$XDG_DATA_HOME/KeanSeatsCatcher` or `~/.local/share/KeanSeatsCatcher` |
+
+For the first upgrade, close the old KSC app and its dedicated browser. Run the updated EXE once from the folder containing your old `config.json`. KSC imports it if the application data folder has no config. It also merges My Catches from `~/.keanseatscatcher`, keeps both files if log filenames collide, and copies each missing browser profile as a whole. Existing config, matching catch records and existing browser profiles take precedence. Legacy files remain available as backups.
+
+`KSC_DATA_DIR` selects an independent data folder, including any history and profiles already stored there. `KSC_LOG_DIR` overrides the log location. The CLI archives the old `cloud_sniper.log` from its working directory under `logs/legacy` in the default layout.
 
 #### Build the Windows release
 

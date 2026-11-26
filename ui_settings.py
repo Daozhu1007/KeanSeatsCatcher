@@ -1,10 +1,11 @@
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
-from qfluentwidgets import (SubtitleLabel, BodyLabel, CardWidget, ComboBox,
-                            SwitchButton,
-                            InfoBar, ScrollArea)
+from qfluentwidgets import (SubtitleLabel, BodyLabel, CardWidget, ComboBox, PushButton,
+                            SwitchButton, InfoBar, ScrollArea, FluentIcon as FIF)
 
-from i18n import i18n, load_config, save_config
+from app_data import data_directory, load_config, save_settings
+from i18n import i18n
 from session_keepalive import KEEPALIVE_INTERVAL_MINUTES, KEEPALIVE_INTERVAL_SECONDS
 
 
@@ -125,12 +126,25 @@ class SettingsInterface(ScrollArea):
         lang_layout.addWidget(self.lang_combo)
         self.layout.addWidget(lang_card)
 
+        self.open_data_folder_button = PushButton(FIF.FOLDER, i18n.tr("settings_open_data_folder"))
+        self.open_data_folder_button.clicked.connect(self._open_data_folder)
+        self.layout.addWidget(self.open_data_folder_button, alignment=Qt.AlignmentFlag.AlignLeft)
+
         self.layout.addStretch(1)
 
+    def _open_data_folder(self):
+        directory = data_directory()
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            if QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory))):
+                return
+        except OSError:
+            pass
+        InfoBar.error(i18n.tr("settings_title"), i18n.tr("settings_open_data_folder_error", directory),
+                      duration=5000, parent=self)
+
     def _on_browser_keep_open_changed(self, checked):
-        config = load_config()
-        config.setdefault("Settings", {})["KeepBrowserOpen"] = checked
-        save_config(config)
+        save_settings(KeepBrowserOpen=checked)
 
     @property
     def keepalive_preferences(self):
@@ -138,11 +152,7 @@ class SettingsInterface(ScrollArea):
 
     def _on_keepalive_changed(self):
         enabled, minutes = self.keepalive_preferences
-        config = load_config()
-        settings = config.setdefault("Settings", {})
-        settings["SessionKeepaliveEnabled"] = enabled
-        settings["SessionKeepaliveIntervalMinutes"] = minutes
-        save_config(config)
+        save_settings(SessionKeepaliveEnabled=enabled, SessionKeepaliveIntervalMinutes=minutes)
         self.keepalive_changed.emit(enabled, minutes)
 
     @property
@@ -150,20 +160,16 @@ class SettingsInterface(ScrollArea):
         return self.session_status_switch.isChecked()
 
     def _on_session_status_visibility_changed(self, checked):
-        config = load_config()
-        config.setdefault("Settings", {})["ShowSessionStatus"] = checked
-        save_config(config)
+        save_settings(ShowSessionStatus=checked)
         self.session_status_visibility_changed.emit(checked)
 
     def _on_lang_changed(self, index):
         lang_code = self.lang_combo.itemData(index)
         if not lang_code:
             return
-        config = load_config()
-        if config.get("Settings", {}).get("Language") == lang_code:
+        if load_config().get("Settings", {}).get("Language") == lang_code:
             return
-        config.setdefault("Settings", {})["Language"] = lang_code
-        save_config(config)
+        save_settings(Language=lang_code)
         i18n.set_language(lang_code)
         InfoBar.success(
             i18n.tr("msg_lang_changed"),

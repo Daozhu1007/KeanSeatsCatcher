@@ -68,7 +68,7 @@
     "auth_use_browser_profile": "Use KSC browser profile",
     "auth_browser_profile_info": "Keep sign-in data in a dedicated Edge or Chrome profile. The browser can remember your password if you choose to save it. Okta may ask you to sign in again.",
     "auth_clear_browser_profile": "Clear browser profile data",
-    "auth_confirm_clear_browser_profile": "Close KSC’s profile browser and delete its cookies, site data and saved passwords from Edge and Chrome?",
+    "auth_confirm_clear_browser_profile": "Close KSC’s profile browsers and delete their cookies, site data and saved passwords, including any legacy KSC profiles?",
     "auth_clear_browser_profile_confirm": "Clear data",
     "auth_browser_profile_cleared": "Browser profile cleared",
     "auth_browser_profile_clear_done": "The next launch will use a fresh profile.",
@@ -165,6 +165,9 @@
     "settings_show_session_status": "Show Session Status",
     "settings_language": "Language",
     "settings_language_desc": "Select the application display language.",
+    "settings_open_data_folder": "Open Application Data Folder",
+    "settings_open_data_folder_error": "Could not open {}.",
+    "data_migration_incomplete": "Application data migration incomplete",
     "msg_lang_changed": "Language Changed",
     "msg_lang_restart": "Please restart the application to apply the language setting.",
 

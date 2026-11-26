@@ -1,7 +1,6 @@
 """Append-only, credential-free registration audit events."""
 import json
 import math
-import os
 import re
 import threading
 import uuid
@@ -9,6 +8,8 @@ from datetime import datetime, timezone
 from html import unescape
 from pathlib import Path
 from urllib.parse import quote, quote_plus, urlsplit
+
+from app_data import log_directory
 
 
 _CREDENTIAL = (r"(?:[a-z0-9_-]*token[a-z0-9_-]*|[a-z0-9_-]*cookie[a-z0-9_-]*|"
@@ -165,10 +166,6 @@ def course_name(*sources):
                  if isinstance(source.get(key), str) and source[key].strip()), None)
 
 
-def data_directory():
-    return Path(os.environ.get("KSC_DATA_DIR", Path.home() / ".keanseatscatcher"))
-
-
 def timestamp():
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
@@ -176,8 +173,7 @@ def timestamp():
 class EventLog:
     def __init__(self, directory=None):
         self.run_id = uuid.uuid4().hex
-        directory = Path(directory or os.environ.get(
-            "KSC_LOG_DIR", data_directory() / "logs"))
+        directory = Path(directory) if directory else log_directory()
         self.path = directory / f"registration-{self.run_id}.jsonl"
         self.error = None
         self._lock = threading.Lock()

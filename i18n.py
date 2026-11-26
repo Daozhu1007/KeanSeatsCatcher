@@ -2,12 +2,9 @@ import sys
 import os
 import json
 
-if getattr(sys, 'frozen', False):
-    app_dir = os.path.dirname(sys.executable)
-    data_dir = sys._MEIPASS
-else:
-    app_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = app_dir
+from app_data import load_config
+
+resource_dir = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
 
 
 class I18nManager:
@@ -17,7 +14,7 @@ class I18nManager:
         self.load_language()
 
     def load_language(self):
-        lang_file = os.path.join(data_dir, "locales", f"{self.locale}.json")
+        lang_file = os.path.join(resource_dir, "locales", f"{self.locale}.json")
         try:
             with open(lang_file, 'r', encoding='utf-8') as f:
                 self.texts = json.load(f)
@@ -38,26 +35,4 @@ class I18nManager:
         self.load_language()
 
 
-def load_config():
-    config_path = os.path.join(app_dir, "config.json")
-    try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def save_config(config):
-    config_path = os.path.join(app_dir, "config.json")
-    try:
-        with open(config_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        print(f"[ERROR] Failed to save config: {e}")
-        return False
-    return True
-
-
-cfg = load_config()
-language = cfg.get("Settings", {}).get("Language") or "en_US"
-i18n = I18nManager(language)
+i18n = I18nManager(load_config().get("Settings", {}).get("Language") or "en_US")

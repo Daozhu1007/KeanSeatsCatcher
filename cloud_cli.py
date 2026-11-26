@@ -13,6 +13,7 @@ import logging
 import signal
 import sys
 
+from app_data import log_directory, migrate_legacy_logs
 from core_api import KeanApiClient, SessionExpiredError
 from cloud_worker import CloudWorker
 from registration_reader import DegreePlanRegistrationReader
@@ -31,7 +32,13 @@ def setup_logging():
     logger.addHandler(console)
 
     # File handler — everything
-    fh = logging.FileHandler('cloud_sniper.log', encoding='utf-8')
+    try:
+        migrate_legacy_logs(include_cli=True)
+    except OSError as exc:
+        logger.warning("Application log migration incomplete: %s", exc)
+    log_dir = log_directory()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    fh = logging.FileHandler(log_dir / 'cloud_sniper.log', encoding='utf-8')
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(logging.Formatter(
         '%(asctime)s  %(levelname)-7s  %(message)s'))

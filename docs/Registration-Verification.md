@@ -104,7 +104,7 @@ RegisterSections 明确返回认证拒绝时，撤销本次 attempted/等待核�
 
 ## 日志
 
-默认目录：`~/.keanseatscatcher/logs/`，Windows 为 `%USERPROFILE%\.keanseatscatcher\logs\`。
+日志默认写入[应用数据目录](../README.md#application-data)下的 `logs/`，Windows 为 `%LOCALAPPDATA%\KeanSeatsCatcher\logs\`。
 可设置 `KSC_LOG_DIR`。Docker Compose 将日志和历史库映射到宿主机 `./logs`。
 每个 API client 生成一个 `registration-<run_id>.jsonl` 文件，界面首次提交时显示完整路径。
 
@@ -127,7 +127,7 @@ KSC 提交后经个人课表确认注册的 Section 会进入历史。只读核�
 记录按 Student ID、学期、Section ID 保留首次确认，包含当时的请求和响应。课程学分与实际发送的
 `Credits` 分开显示。当前注册状态以 KeanWISE 为准。
 
-历史保存在 `~/.keanseatscatcher/catches.sqlite3`。直接运行或替换 Portable 版 `KeanSeatsCatcher.exe` 后，应用会从同一位置读取历史。
+历史保存在应用数据目录的 `catches.sqlite3`。Portable 版和安装版共用此目录，Windows 为 `%LOCALAPPDATA%\KeanSeatsCatcher`。
 `KSC_DATA_DIR` 可指定数据目录。旧日志恢复的条目会保留已有的状态、时间和请求耗时，
 缺失的请求体、响应体和 Student ID 会标记为未记录。
 

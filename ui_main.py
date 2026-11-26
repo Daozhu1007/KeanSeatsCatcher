@@ -1,12 +1,8 @@
 import sys
 import os
+import sqlite3
 
-if getattr(sys, 'frozen', False):
-    app_dir = os.path.dirname(sys.executable)
-    data_dir = sys._MEIPASS
-else:
-    app_dir = os.path.dirname(os.path.abspath(__file__))
-    data_dir = app_dir
+resource_dir = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
 
 import time
 import threading
@@ -16,11 +12,14 @@ from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal, QUrl, QObject
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSizePolicy
 from qfluentwidgets import (FluentWindow, SubtitleLabel, BodyLabel, LineEdit,
                             PushButton, TextEdit, CardWidget, CheckBox, MessageBox, SwitchButton,
-                            Theme, setTheme, qconfig, NavigationItemPosition,
+                            Theme, setTheme, NavigationItemPosition,
                             FluentIcon as FIF, InfoBar, InfoBarPosition,
                             ScrollArea)
 
-from i18n import i18n, load_config, save_config
+from app_data import load_config, migrate_legacy_config, migrate_legacy_logs, save_settings
+from browser_profiles import BrowserProfiles
+from catch_history import CatchHistory
+from i18n import i18n
 from core_auth import KeanAuthManager
 from core_api import KeanApiClient, SessionExpiredError
 from registration_state import SessionStatus
@@ -50,9 +49,9 @@ class BrandingWidget(QWidget):
         self.icon_label.setStyleSheet("background-color: rgba(255, 255, 255, 0.85); border-radius: 4px; padding: 2px;")
         self.icon_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
-        logo_path = os.path.join(data_dir, "assets", "logo.png")
+        logo_path = os.path.join(resource_dir, "assets", "logo.png")
         if not os.path.exists(logo_path):
-            logo_path = os.path.join(data_dir, "assets", "logo.jpg")
+            logo_path = os.path.join(resource_dir, "assets", "logo.jpg")
 
         if os.path.exists(logo_path):
             pixmap = QPixmap(logo_path)
@@ -638,9 +637,7 @@ class AuthInterface(QWidget):
         self.btn_clear_profile.clicked.connect(self.handle_clear_profile)
 
     def on_profile_changed(self, checked):
-        config = load_config()
-        config.setdefault("Settings", {})["PersistentBrowserProfile"] = checked
-        if save_config(config):
+        if save_settings(PersistentBrowserProfile=checked):
             self.auth_manager.persistent_profile = checked
             return
         self.profile_checkbox.blockSignals(True)
@@ -781,9 +778,9 @@ class AboutInterface(ScrollArea):
         logo_label = QLabel()
         logo_label.setStyleSheet("background-color: rgba(255, 255, 255, 0.85); border-radius: 8px; padding: 4px;")
 
-        logo_path = os.path.join(data_dir, "assets", "logo.png")
+        logo_path = os.path.join(resource_dir, "assets", "logo.png")
         if not os.path.exists(logo_path):
-            logo_path = os.path.join(data_dir, "assets", "logo.jpg")
+            logo_path = os.path.join(resource_dir, "assets", "logo.jpg")
 
         if os.path.exists(logo_path):
             pixmap = QPixmap(logo_path)
@@ -805,12 +802,12 @@ class AboutInterface(ScrollArea):
         top_layout.addLayout(info_layout)
         top_layout.addStretch(1)
 
-        if os.path.exists(os.path.join(data_dir, "assets", "github.png")):
-            btn_github = PushButton(QIcon(os.path.join(data_dir, "assets", "github.png")), "GitHub")
+        if os.path.exists(os.path.join(resource_dir, "assets", "github.png")):
+            btn_github = PushButton(QIcon(os.path.join(resource_dir, "assets", "github.png")), "GitHub")
         else:
             btn_github = PushButton(FIF.LINK, "GitHub")
-        if os.path.exists(os.path.join(data_dir, "assets", "bilibili.png")):
-            btn_bilibili = PushButton(QIcon(os.path.join(data_dir, "assets", "bilibili.png")), "Bilibili")
+        if os.path.exists(os.path.join(resource_dir, "assets", "bilibili.png")):
+            btn_bilibili = PushButton(QIcon(os.path.join(resource_dir, "assets", "bilibili.png")), "Bilibili")
         else:
             btn_bilibili = PushButton(FIF.VIDEO, "Bilibili")
 
@@ -862,11 +859,10 @@ class AboutInterface(ScrollArea):
 class KeanSeatsCatcherApp(FluentWindow):
     def __init__(self):
         super().__init__()
-        setTheme(Theme.DARK)
-        qconfig.set(qconfig.themeMode, Theme.DARK)
+        setTheme(Theme.DARK, save=False)
 
         self.setWindowTitle("KeanSeatsCatcher")
-        self.setWindowIcon(QIcon(os.path.join(data_dir, "assets", "logo.ico")))
+        self.setWindowIcon(QIcon(os.path.join(resource_dir, "assets", "logo.ico")))
         self.resize(1000, 650)
         self.setMinimumSize(900, 650)
 
@@ -1009,6 +1005,18 @@ class KeanSeatsCatcherApp(FluentWindow):
         super().closeEvent(event)
 
 
+def _migrate_user_data():
+    errors = []
+    for migrate in (migrate_legacy_config, CatchHistory().migrate_legacy,
+                    migrate_legacy_logs, BrowserProfiles().migrate_legacy):
+        try:
+            migrate()
+        except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
+            errors.append(str(exc))
+    i18n.set_language(load_config().get("Settings", {}).get("Language") or "en_US")
+    return errors
+
+
 def _set_portable_taskbar_properties(window):
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
         return
@@ -1040,8 +1048,12 @@ if __name__ == '__main__':
         pass
 
     app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon(os.path.join(data_dir, "assets", "logo.ico")))
+    app.setWindowIcon(QIcon(os.path.join(resource_dir, "assets", "logo.ico")))
+    migration_errors = _migrate_user_data()
     window = KeanSeatsCatcherApp()
     _set_portable_taskbar_properties(window)
     window.show()
+    if migration_errors:
+        InfoBar.warning(i18n.tr("data_migration_incomplete"), "\n".join(migration_errors),
+                        duration=10000, parent=window)
     sys.exit(app.exec())

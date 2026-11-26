@@ -11,7 +11,8 @@ from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
-from selenium.common.exceptions import WebDriverException, TimeoutException, NoSuchElementException
+from selenium.common.exceptions import (InvalidArgumentException, NoSuchElementException,
+                                         TimeoutException, WebDriverException)
 
 from browser_profiles import BrowserProfiles
 from i18n import i18n
@@ -51,6 +52,7 @@ class KeanAuthManager:
     def _launch(self, headless, detach, persistent):
         browsers = list(self._profiles.browsers)
         if persistent:
+            self._profiles.migrate_legacy()
             preferred = self._profiles.preferred_browser()
             browsers.sort(key=lambda browser: browser != preferred)
         elif sys.platform == "darwin" and not headless:
@@ -90,6 +92,10 @@ class KeanAuthManager:
                     options.add_argument("--disable-background-mode")
                     # Let the browser use its native credential storage.
                     switches.extend(("password-store", "use-mock-keychain"))
+                    if not headless:
+                        # Chromium drivers start a BiDi session with a blank tab
+                        # even when they use an existing user data directory.
+                        options.set_capability("webSocketUrl", True)
                 elif detach:
                     options.add_experimental_option("detach", True)
                 options.add_experimental_option("excludeSwitches", switches)
@@ -99,7 +105,13 @@ class KeanAuthManager:
                     options.add_argument("--window-size=1920,1080")
 
                 factory = webdriver.Edge if name == "Edge" else webdriver.Chrome
-                driver = factory(options=options)
+                try:
+                    driver = factory(options=options)
+                except InvalidArgumentException as exc:
+                    if not options.capabilities.get("webSocketUrl") or "webSocketUrl" not in str(exc):
+                        raise
+                    options.capabilities.pop("webSocketUrl")
+                    driver = factory(options=options)
                 driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
                     'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined});'
                 })

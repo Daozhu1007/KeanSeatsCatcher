@@ -3,7 +3,7 @@ from threading import Event
 from unittest.mock import Mock
 
 import pytest
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import InvalidArgumentException, TimeoutException, WebDriverException
 
 import core_auth
 from browser_profiles import BrowserProfileBusy, BrowserProfiles
@@ -29,8 +29,10 @@ def test_chrome_fallback_reuses_its_profile_after_restart(monkeypatch, tmp_path)
     first.open_login_page(detach=True)
     options = chrome.call_args.kwargs["options"]
     assert f"--user-data-dir={tmp_path / 'browser-profiles' / 'chrome'}" in options.arguments
+    assert options.capabilities["webSocketUrl"] is True
     assert not options.experimental_options.get("detach")
     driver = first.driver
+    driver.get.assert_called_once_with(first.login_url)
     first.finish_login()
     driver.quit.assert_called_once()
 
@@ -46,8 +48,29 @@ def test_chrome_fallback_reuses_its_profile_after_restart(monkeypatch, tmp_path)
     temporary.launch_browser(headless=True, detach=True)
     options = edge.call_args.kwargs["options"]
     assert not any(arg.startswith("--user-data-dir=") for arg in options.arguments)
+    assert "webSocketUrl" not in options.capabilities
     assert options.experimental_options["detach"]
     temporary.close_browser()
+
+
+def test_driver_without_bidi_still_launches_the_same_profile(monkeypatch):
+    attempts = []
+
+    def start_browser(**kwargs):
+        attempts.append(kwargs["options"].capabilities.copy())
+        if "webSocketUrl" in attempts[-1]:
+            raise InvalidArgumentException("unrecognized capability: webSocketUrl")
+        return fake_browser(**kwargs)
+
+    monkeypatch.setattr(core_auth.webdriver, "Edge", start_browser)
+    auth = KeanAuthManager(persistent_profile=True)
+    try:
+        auth.open_login_page()
+        assert attempts[0].pop("webSocketUrl") is True
+        assert attempts[0] == attempts[1]
+        auth.driver.get.assert_called_once_with(auth.login_url)
+    finally:
+        auth.close_browser()
 
 
 def test_clear_is_limited_to_ksc_profiles_and_checks_both_leases(tmp_path):

@@ -71,6 +71,7 @@ docs/_build/
 
 # Sessions
 session.json
+/config.json
 logs/
 registration-*.jsonl
 

@@ -68,7 +68,7 @@
     "auth_use_browser_profile": "使用 KSC 专用浏览器 Profile",
     "auth_browser_profile_info": "在 Edge 或 Chrome 的专用 Profile 中保留登录数据。你可以选择由浏览器记住密码。Okta 仍可能要求重新认证。",
     "auth_clear_browser_profile": "清除浏览器 Profile 数据",
-    "auth_confirm_clear_browser_profile": "关闭 KSC 的专用浏览器窗口，并清除 Edge 和 Chrome 专用 Profile 中的 Cookie、网站数据和已保存的密码？",
+    "auth_confirm_clear_browser_profile": "关闭 KSC 的专用浏览器窗口，并清除专用 Profile（包括旧版保留的副本）中的 Cookie、网站数据和已保存的密码？",
     "auth_clear_browser_profile_confirm": "清除数据",
     "auth_browser_profile_cleared": "专用浏览器 Profile 已清除",
     "auth_browser_profile_clear_done": "下次启动浏览器时将使用全新的 Profile。",
@@ -165,6 +165,9 @@
     "settings_show_session_status": "显示会话状态",
     "settings_language": "界面语言",
     "settings_language_desc": "选择应用程序界面显示语言。",
+    "settings_open_data_folder": "打开应用数据文件夹",
+    "settings_open_data_folder_error": "无法打开 {}。",
+    "data_migration_incomplete": "应用数据迁移未完成",
     "msg_lang_changed": "语言已切换",
     "msg_lang_restart": "请重启软件以使语言设置生效。",
 

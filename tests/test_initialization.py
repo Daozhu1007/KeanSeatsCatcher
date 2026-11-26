@@ -48,8 +48,7 @@ def test_gui_extraction_enables_scoped_reader(tmp_path, monkeypatch, qt_app):
     widget.close()
 
 
-def test_auto_catch_layout_matches_dashboard(tmp_path, monkeypatch, qt_app):
-    monkeypatch.setattr("i18n.app_dir", str(tmp_path))
+def test_auto_catch_layout_matches_dashboard(qt_app):
     window = ui_main.KeanSeatsCatcherApp()
     dashboard, auto = window.monitor_interface, window.autocatch_interface
     window.stackedWidget.setAnimationEnabled(False)
@@ -76,8 +75,7 @@ def test_auto_catch_layout_matches_dashboard(tmp_path, monkeypatch, qt_app):
         window.close()
 
 
-def test_section_ids_take_focus_via_mouse_or_tab_after_navigation(tmp_path, monkeypatch, qt_app):
-    monkeypatch.setattr("i18n.app_dir", str(tmp_path))
+def test_section_ids_take_focus_via_mouse_or_tab_after_navigation(qt_app):
     window = ui_main.KeanSeatsCatcherApp()
     dashboard, auto = window.monitor_interface, window.autocatch_interface
     settings = window.settings_interface
@@ -109,8 +107,7 @@ def test_section_ids_take_focus_via_mouse_or_tab_after_navigation(tmp_path, monk
         window.close()
 
 
-def test_browser_profile_preference_is_optional_and_shared_with_recovery(tmp_path, monkeypatch, qt_app):
-    monkeypatch.setattr("i18n.app_dir", str(tmp_path))
+def test_browser_profile_preference_is_optional_and_shared_with_recovery(qt_app):
     window = ui_main.KeanSeatsCatcherApp()
     auth = window.auth_interface
     try:
@@ -133,7 +130,6 @@ def test_browser_profile_preference_is_optional_and_shared_with_recovery(tmp_pat
 
 
 def test_session_summaries_share_status_and_persisted_settings(tmp_path, monkeypatch, qt_app):
-    monkeypatch.setattr("i18n.app_dir", str(tmp_path))
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"Settings": {"Language": "en_US", "KeepBrowserOpen": True}}), encoding="utf-8")
     valid = '<a href="/Student/Account/Logout">Out</a><input name="__RequestVerificationToken" value="fixture">'
