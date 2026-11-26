@@ -1,4 +1,4 @@
-"""Schedule foreground and background Session Checks on one maintenance worker."""
+"""Run session checks and keepalive cycles on one session worker."""
 import threading
 import time
 from dataclasses import dataclass
@@ -14,6 +14,14 @@ UNKNOWN_ALERT_THRESHOLD = 3
 
 
 @dataclass(frozen=True)
+class SessionActionResult:
+    """Outcome and wall-clock completion time for one Dashboard action."""
+
+    completed_at: float
+    outcome: str
+
+
+@dataclass(frozen=True)
 class KeepaliveSnapshot:
     state: str
     interval: float
@@ -24,6 +32,8 @@ class KeepaliveSnapshot:
     session: SessionState
     scheduled_from: float | None
     recovering: bool
+    last_check: SessionActionResult | None
+    last_keepalive: SessionActionResult | None
 
 
 class SessionKeepalive:
@@ -49,6 +59,8 @@ class SessionKeepalive:
         self._credential_updates = 0
         self._action = None
         self._recovering = False
+        self._last_check = None
+        self._last_keepalive = None
         self._thread = None
 
     def start(self):
@@ -134,7 +146,7 @@ class SessionKeepalive:
             if not self._enabled or self._stopped:
                 state = "disabled"
             elif self._action is not None:
-                state = "checking"
+                state = "checking" if self._action == "check" else "running"
             elif needs_sign_in:
                 state = "manual_required"
             elif busy:
@@ -147,7 +159,7 @@ class SessionKeepalive:
                     state = "retry" if self._using_retry(session) else "scheduled"
             return KeepaliveSnapshot(state, self.interval, next_due, self._action, can_check,
                                      can_check and not needs_sign_in, session, scheduled_from,
-                                     self._recovering)
+                                     self._recovering, self._last_check, self._last_keepalive)
 
     def _run(self):
         while True:
@@ -177,7 +189,8 @@ class SessionKeepalive:
                 check, recovery = self._cycle(action)
             except Exception as exc:
                 check, recovery = SessionCheck(SessionStatus.UNKNOWN, 0, type(exc).__name__), None
-                self._report(i18n.tr("keepalive_error", type(exc).__name__), "error")
+                key = "session_check_error" if action == "check" else "keepalive_error"
+                self._report(i18n.tr(key, type(exc).__name__), "error")
 
             with self._changed:
                 self._action = None
@@ -185,6 +198,13 @@ class SessionKeepalive:
                 if self._stopped:
                     return
                 credentials_changed = credential_updates != self._credential_updates
+                outcome = ("superseded" if credentials_changed or not check.current
+                           else recovery or check.status.value.lower())
+                result = SessionActionResult(time.time(), outcome)
+                if action == "check":
+                    self._last_check = result
+                else:
+                    self._last_keepalive = result
                 if not credentials_changed:
                     self._finish_cycle(action, check, recovery, was_retry)
                 consecutive_unknown = self._consecutive_unknown

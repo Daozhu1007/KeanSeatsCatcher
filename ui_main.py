@@ -31,7 +31,7 @@ from worker_session import recover_session
 from ui_autocatch import AutoCatchInterface
 from ui_catches import MyCatchesInterface
 from ui_lookup import SectionLookupInterface
-from ui_session import SessionStatusButton
+from ui_session import SessionSummary
 from ui_settings import SettingsInterface
 
 APP_USER_MODEL_ID = "wku.mingtai.keanseatscatcher.v2"
@@ -287,9 +287,10 @@ class MonitorInterface(QWidget):
         title = SubtitleLabel(i18n.tr("monitor_title"))
         title.setStyleSheet("font-size: 26px; font-weight: bold;")
         title_row = QHBoxLayout()
+        title_row.setSpacing(16)
         title_row.addWidget(title, 1)
-        self.session_status_button = SessionStatusButton()
-        title_row.addWidget(self.session_status_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.session_summary = SessionSummary()
+        title_row.addWidget(self.session_summary, 0, Qt.AlignmentFlag.AlignVCenter)
         self.layout.addLayout(title_row)
 
         card = CardWidget()
@@ -342,8 +343,8 @@ class MonitorInterface(QWidget):
         btn_row.addWidget(self.btn_start)
         btn_row.addWidget(self.btn_stop)
         btn_row.addStretch(1)
-        self.btn_keepalive = PushButton(FIF.PLAY, i18n.tr("btn_keepalive_now"))
-        self.btn_ping = PushButton(FIF.SYNC, i18n.tr("btn_ping"))
+        self.btn_keepalive = PushButton(FIF.SYNC, i18n.tr("btn_keepalive_now"))
+        self.btn_ping = PushButton(FIF.SEARCH, i18n.tr("btn_ping"))
         for button in (self.btn_keepalive, self.btn_ping):
             button.setMinimumWidth(button.sizeHint().width())
             btn_row.addWidget(button)
@@ -403,11 +404,11 @@ class MonitorInterface(QWidget):
 
     def _refresh_session_status(self):
         snapshot = self.session_keepalive.snapshot() if self.session_keepalive is not None else None
-        self.session_status_button.update_status(self._keepalive_enabled, self._keepalive_minutes, snapshot)
+        self.session_summary.update_status(self._keepalive_enabled, self._keepalive_minutes, snapshot)
 
         action = snapshot.action if snapshot else None
         self.btn_ping.setText(i18n.tr("session_checking" if action == "check" else "btn_ping"))
-        self.btn_keepalive.setText(i18n.tr("session_checking" if action == "keepalive" else "btn_keepalive_now"))
+        self.btn_keepalive.setText(i18n.tr("session_keeping_alive" if action == "keepalive" else "btn_keepalive_now"))
         self.btn_ping.setEnabled(bool(snapshot and snapshot.can_check and not self.is_checking_session))
         self.btn_keepalive.setEnabled(bool(snapshot and snapshot.can_keepalive and not self.is_checking_session))
         cooling_down = snapshot and time.monotonic() < snapshot.session.cooldown_until

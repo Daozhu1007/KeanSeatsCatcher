@@ -61,8 +61,8 @@ ui_main.py  →  PyQt6 + qfluentwidgets
 | **Memory Safety** | Log widget capped at 1 000 lines; minimum 1 s polling interval to prevent CPU thrashing |
 | **Recovery Counter** | Status bar shows `Polling (Round #1245) \| Recoveries: 3...` for situational awareness |
 | **Waitlist Fallback** | Requires a scoped Closed rejection and a verified record showing the Section is not registered |
-| **Session Status** | Dashboard shows the session and automatic keepalive state, the next scheduled check, the last successful check and the last retained primary authentication cookie renewal. Use **Session Check** or **Keep Alive Now** while idle or counting down. |
-| **Session Keepalive** | Settings can turn automatic checks off or set a 5, 10 or 15 minute interval. The default is on at 10 minutes. A transient connection failure gets one recheck after 60 seconds. Checks respect `Retry-After` and pause during active registration tasks. Confirmed expiry gets one verified Okta recovery attempt. |
+| **Session Status** | The Dashboard header shows the current session, automatic keepalive status and next run countdown. Last Session Check and Last Keep Alive show separate times and outcomes. Use **Session Check** to verify the session or **Keep Alive Now** to run maintenance while idle or waiting for a scheduled task. |
+| **Session Keepalive** | Settings can turn automatic keepalive off or set a 5, 10 or 15 minute interval. The default is on at 10 minutes. A transient connection failure gets one recheck after 60 seconds. Maintenance respects `Retry-After` and pauses during active registration tasks. Confirmed expiry during maintenance gets one verified Okta recovery attempt. |
 | **Section Lookup** | Read course details, term, credits, seat counts, waitlist availability and account registration status for one or more Section IDs. |
 | **Event Logs** | JSONL audit trail with requests, redacted responses, per-Section results and timings in `~/.keanseatscatcher/logs` |
 | **My Catches** | Confirmed catches with request details, account filtering and individual record deletion. History lives in `~/.keanseatscatcher/catches.sqlite3` across Portable upgrades. |

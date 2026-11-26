@@ -57,7 +57,8 @@ def wait_until(predicate):
 @pytest.fixture
 def clock(monkeypatch):
     value = [200.0]
-    monkeypatch.setattr(session_keepalive, "time", SimpleNamespace(monotonic=lambda: value[0]))
+    monkeypatch.setattr(session_keepalive, "time", SimpleNamespace(
+        monotonic=lambda: value[0], time=lambda: 1_700_000_000 + value[0]))
     return value
 
 
@@ -98,6 +99,27 @@ def test_recent_registration_traffic_moves_due_time_without_a_duplicate_visit(cl
     wait_until(lambda: len(fake.log_events) == 1)
     assert fake.log_events[-1]["outcome"] == "valid"
     assert keeper.snapshot().next_due == 1900
+
+
+def test_session_check_and_automatic_keepalive_record_separate_outcomes(clock, start_keeper, monkeypatch):
+    recover = Mock(return_value=True)
+    monkeypatch.setattr(session_keepalive, "recover_session", recover)
+    expired = SessionCheck(SessionStatus.EXPIRED, 7, "http_401")
+    keeper = start_keeper(FakeClient([expired, expired]), auth_manager=Mock())
+    assert keeper.request_check()
+    wait_until(lambda: keeper.snapshot().last_check is not None)
+    check = keeper.snapshot().last_check
+    assert check.outcome == "expired" and check.completed_at == 1_700_000_200
+    assert keeper.snapshot().last_keepalive is None
+    recover.assert_not_called()
+
+    advance(keeper, clock, 800)
+    wait_until(lambda: keeper.snapshot().last_keepalive is not None)
+    snapshot = keeper.snapshot()
+    recover.assert_called_once()
+    assert snapshot.last_keepalive.outcome == "recovered"
+    assert snapshot.last_keepalive.completed_at == 1_700_000_800
+    assert snapshot.last_check == check
 
 
 def test_network_failure_gets_one_early_recheck_per_regular_cycle(clock, start_keeper, monkeypatch):
@@ -263,10 +285,12 @@ def test_snapshot_tracks_recovery_until_the_cycle_settles(clock, start_keeper, m
         snapshot = keeper.snapshot()
         assert snapshot.recovering and snapshot.action == "keepalive"
         assert snapshot.scheduled_from is snapshot.next_due is None
+        assert snapshot.last_keepalive is None
     finally:
         release.set()
     wait_until(lambda: keeper.snapshot().state == "manual_required")
     assert not keeper.snapshot().recovering
+    assert keeper.snapshot().last_keepalive.outcome == "manual_required"
 
 
 @pytest.mark.parametrize("error", [requests.ConnectTimeout(), requests.ReadTimeout(), requests.ConnectionError()])

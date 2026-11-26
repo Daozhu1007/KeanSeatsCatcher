@@ -3,17 +3,13 @@ from unittest.mock import Mock
 
 import pytest
 import requests
-from PyQt6.QtCore import QAbstractAnimation, QPoint, Qt
-from PyQt6.QtTest import QSignalSpy, QTest
-from PyQt6.QtWidgets import QPushButton, QWidget
-from qfluentwidgets import Flyout
+from PyQt6.QtTest import QTest
 
 import cloud_cli
 import core_auth
 import ui_main
 from registration_reader import DegreePlanRegistrationReader
 from test_registration import client, response, snapshot, S
-from ui_session import SessionStatusButton
 
 
 CREDENTIALS = {"cookies": {}, "verification_token": "fixture-token", "student_id": "fixture-student"}
@@ -74,85 +70,20 @@ def test_auto_catch_layout_matches_dashboard(qt_app):
         window.close()
 
 
-@pytest.mark.parametrize("dismiss", ["button", "shadow", "outside", "escape"])
-def test_session_status_flyout_dismissal(qt_app, dismiss):
-    window = QWidget()
-    window.resize(620, 400)
-    button = SessionStatusButton()
-    button.setParent(window)
-    button.setText("Session: Unchecked")
-    button.adjustSize()
-    button.move(420, 20)
-    outside = QPushButton("Outside", window)
-    outside.move(20, 300)
-    outside_clicked = QSignalSpy(outside.clicked)
-    window.show()
-    try:
-        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
-        flyout = button.findChild(Flyout)
-        animation = flyout.aniManager.aniGroup
-        animation.setCurrentTime(animation.duration())
-        closed = QSignalSpy(flyout.closed)
-        settled = flyout.pos()
-
-        if dismiss == "escape":
-            QTest.keyClick(window, Qt.Key.Key_Escape)
-        elif dismiss == "shadow":
-            edge = button.rect().bottomRight() - QPoint(12, 0)
-            position = flyout.mapFromGlobal(button.mapToGlobal(edge))
-            assert flyout.rect().contains(position)
-            QTest.mouseClick(flyout, Qt.MouseButton.LeftButton, pos=position)
-        else:
-            QTest.mouseClick(button if dismiss == "button" else outside, Qt.MouseButton.LeftButton)
-        assert len(outside_clicked) == (dismiss == "outside")
-        assert flyout.isVisible() and len(closed) == 0
-        assert animation.direction() == QAbstractAnimation.Direction.Backward
-        animation.setCurrentTime(animation.duration() // 2)
-        assert 0 < flyout.windowOpacity() < 1
-        assert flyout.x() == settled.x() and flyout.y() < settled.y()
-        assert closed.wait(1000)
-        assert button._flyout is None
-    finally:
-        if button._flyout is not None:
-            button._flyout.close()
-        window.close()
-
-
-def test_session_status_flyout_reverses_in_place(qt_app):
-    button = SessionStatusButton()
-    button.show()
-    try:
-        button.click()
-        flyout = button.findChild(Flyout)
-        animation = flyout.aniManager.aniGroup
-        animation.setCurrentTime(animation.duration() // 2)
-        for direction in (QAbstractAnimation.Direction.Backward, QAbstractAnimation.Direction.Forward):
-            before = (animation.currentTime(), flyout.pos(), flyout.windowOpacity())
-            button.click()
-            assert animation.direction() == direction
-            assert (animation.currentTime(), flyout.pos(), flyout.windowOpacity()) == before
-            assert button.findChildren(Flyout) == [flyout] and flyout.isVisible()
-        animation.setCurrentTime(animation.duration())
-        assert flyout.windowOpacity() == 1
-    finally:
-        if button._flyout is not None:
-            button._flyout.close()
-        button.close()
-
-
-def test_dashboard_session_flyout_and_persisted_keepalive_preferences(tmp_path, monkeypatch, qt_app):
+def test_dashboard_session_summary_and_persisted_keepalive_preferences(tmp_path, monkeypatch, qt_app):
     monkeypatch.setattr("i18n.app_dir", str(tmp_path))
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"Settings": {"Language": "en_US", "KeepBrowserOpen": True}}), encoding="utf-8")
     valid = '<a href="/Student/Account/Logout">Out</a><input name="__RequestVerificationToken" value="fixture">'
-    send = Mock(return_value=response(text=valid))
+    send = Mock(side_effect=[response(status=401), response(text=valid)])
     monkeypatch.setattr(requests.Session, "request", send)
     monkeypatch.setattr(ui_main.InfoBar, "success", Mock())
+    monkeypatch.setattr(ui_main.InfoBar, "warning", Mock())
 
     window = ui_main.KeanSeatsCatcherApp()
     monitor, auth, settings = window.monitor_interface, window.auth_interface, window.settings_interface
+    summary = monitor.session_summary
     auth.auth_manager = Mock()
-    flyout = None
     try:
         window.show()
         qt_app.processEvents()
@@ -165,44 +96,50 @@ def test_dashboard_session_flyout_and_persisted_keepalive_preferences(tmp_path, 
         assert monitor.btn_keepalive.geometry().right() < monitor.btn_ping.x()
         assert not monitor.btn_ping.isEnabled() and not monitor.btn_keepalive.isEnabled()
 
-        QTest.mouseClick(monitor.session_status_button, Qt.MouseButton.LeftButton)
-        flyout = monitor.session_status_button.findChild(Flyout)
-        assert flyout is not None and flyout.isVisible()
-        values = flyout.view.values
-        assert values["next_check"].text() == "—"
+        tr = ui_main.i18n.tr
+        assert summary.isVisible()
+        assert summary.status_label.text() == tr("session_unverified")
+        assert summary.automatic_label.text() == f"{tr('session_auto_on')} · {tr('keepalive_state_waiting')}"
 
         auth.on_credentials_extracted(CREDENTIALS)
         keeper = window.session_keepalive
         first_due = keeper.snapshot().next_due
         assert monitor.btn_ping.isEnabled() and monitor.btn_keepalive.isEnabled()
-        assert values["last_check"].text() == values["last_renewal"].text() == "—"
-        assert values["next_check"].text() != "—"
+        assert summary.last_check_label.text() == summary.last_keepalive_label.text() == "—"
+        assert tr("session_next_keepalive") in summary.automatic_label.toolTip()
         send.assert_not_called()
 
         settings.keepalive_interval.setCurrentIndex(2)
         assert keeper.snapshot().next_due == first_due + 300
         settings.keepalive_switch.setChecked(False)
         assert keeper.snapshot().next_due is None
-        assert values["next_check"].text() == "—"
+        assert summary.automatic_label.text() == tr("session_auto_off")
 
-        monitor.btn_keepalive.click()
-        expected_status = ui_main.i18n.tr("session_state_valid")
-        expected_summary = ui_main.i18n.tr("session_status_summary", expected_status)
+        monitor.btn_ping.click()
         for _ in range(150):
-            if monitor.session_status_button.text() == expected_summary:
+            if not monitor.is_checking_session:
                 break
             QTest.qWait(10)
-        assert values["last_check"].text() != "—"
-        assert values["last_renewal"].text() == values["next_check"].text() == "—"
-        assert values["last_check"].text() == ui_main.i18n.tr("session_time_just_now")
-        assert values["last_check"].toolTip() and not values["last_renewal"].toolTip()
-        assert values["status"].text() == ui_main.i18n.tr("session_alive")
-        assert values["keepalive"].text() == ui_main.i18n.tr("keepalive_state_disabled")
-        assert monitor.session_status_button.text() == expected_summary
-        assert send.call_count == 1
+        assert summary.status_label.text() == tr("session_expired")
+        last_check = summary.last_check_label.text()
+        last_check_tooltip = summary.last_check_label.toolTip()
+        assert last_check.startswith(f"{tr('session_result_expired')} · ") and last_check_tooltip
+        assert summary.last_keepalive_label.text() == "—"
+        send.assert_called_once()
+
+        monitor.btn_keepalive.click()
+        for _ in range(150):
+            if summary.last_keepalive_label.text() != "—":
+                break
+            QTest.qWait(10)
+        assert summary.last_keepalive_label.text().startswith(f"{tr('session_result_completed')} · ")
+        assert summary.last_keepalive_label.toolTip()
+        assert summary.last_check_label.text() == last_check
+        assert summary.last_check_label.toolTip() == last_check_tooltip
+        assert summary.status_label.text() == tr("session_alive")
+        assert summary.automatic_label.text() == tr("session_auto_off")
+        assert send.call_count == 2
     finally:
-        if flyout is not None:
-            flyout.close()
         window.close()
         if window.session_keepalive is not None:
             window.session_keepalive._thread.join(3)
