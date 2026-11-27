@@ -1,7 +1,7 @@
 <p align="center"><img src="assets/logo.png" width="128" alt="KeanSeatsCatcher logo"></p>
 <h1 align="center">KeanSeatsCatcher</h1>
 
-KeanSeatsCatcher is Limitime's course registration tool for KeanWISE Self-Service.
+KeanSeatsCatcher (KSC) is an open-source course registration and seat monitoring tool for KeanWISE Self-Service.
 Look up sections, schedule a registration attempt, or watch for an opening.
 The Windows app has an English and a Simplified Chinese interface. Cloud Phantom
 is the command-line version of Auto-Catch.
